@@ -11,3 +11,4 @@ _notes/
 _tmp_*
 test-project/
 .venv*/
+.gstack/

@@ -20,7 +20,7 @@
 
 Open-source CLI agent that autonomously writes, audits, and revises novels — with human review gates that keep you in control.
 
-**Native English support** — 10 built-in English genre profiles with dedicated pacing rules, fatigue word lists, and audit dimensions. See [English Genre Profiles](#english-genre-profiles) for details.
+**Native English support** — 10 built-in English genre profiles with dedicated pacing rules, fatigue word lists, and audit dimensions. See [README for detail](#english-genre-profiles).
 
 ## Quick Start
 
