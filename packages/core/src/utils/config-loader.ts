@@ -44,7 +44,24 @@ export async function loadProjectConfig(root: string): Promise<ProjectConfig> {
   if (env.INKOS_LLM_TEMPERATURE) llm.temperature = parseFloat(env.INKOS_LLM_TEMPERATURE);
   if (env.INKOS_LLM_MAX_TOKENS) llm.maxTokens = parseInt(env.INKOS_LLM_MAX_TOKENS, 10);
   if (env.INKOS_LLM_THINKING_BUDGET) llm.thinkingBudget = parseInt(env.INKOS_LLM_THINKING_BUDGET, 10);
-  if (env.INKOS_LLM_REASONING_EFFORT) llm.reasoningEffort = env.INKOS_LLM_REASONING_EFFORT;
+  // Extra params from env: INKOS_LLM_EXTRA_<key>=<value>
+  const extraFromEnv: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (key.startsWith("INKOS_LLM_EXTRA_") && value) {
+      const paramName = key.slice("INKOS_LLM_EXTRA_".length);
+      // Auto-coerce: numbers, booleans, JSON objects
+      if (/^\d+(\.\d+)?$/.test(value)) extraFromEnv[paramName] = parseFloat(value);
+      else if (value === "true") extraFromEnv[paramName] = true;
+      else if (value === "false") extraFromEnv[paramName] = false;
+      else if (value.startsWith("{") || value.startsWith("[")) {
+        try { extraFromEnv[paramName] = JSON.parse(value); } catch { extraFromEnv[paramName] = value; }
+      }
+      else extraFromEnv[paramName] = value;
+    }
+  }
+  if (Object.keys(extraFromEnv).length > 0) {
+    llm.extra = { ...(llm.extra as Record<string, unknown> ?? {}), ...extraFromEnv };
+  }
   if (env.INKOS_LLM_API_FORMAT) llm.apiFormat = env.INKOS_LLM_API_FORMAT;
   config.llm = llm;
 

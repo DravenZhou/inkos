@@ -23,13 +23,14 @@ configCommand
 
       const KNOWN_KEYS = new Set([
         "llm.provider", "llm.baseUrl", "llm.model", "llm.temperature",
-        "llm.maxTokens", "llm.thinkingBudget", "llm.reasoningEffort", "llm.apiFormat", "llm.stream",
+        "llm.maxTokens", "llm.thinkingBudget", "llm.apiFormat", "llm.stream",
         "daemon.schedule.radarCron", "daemon.schedule.writeCron",
         "daemon.maxConcurrentBooks", "daemon.chaptersPerCycle",
         "daemon.retryDelayMs", "daemon.cooldownAfterChapterMs",
         "daemon.maxChaptersPerDay",
       ]);
-      if (!KNOWN_KEYS.has(key)) {
+      // Allow any key under llm.extra.* (passthrough to API)
+      if (!KNOWN_KEYS.has(key) && !key.startsWith("llm.extra.")) {
         // Find closest match by edit distance on the last segment
         const candidates = [...KNOWN_KEYS];
         const inputParts = key.split(".");
