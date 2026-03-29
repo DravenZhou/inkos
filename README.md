@@ -331,10 +331,33 @@ inkos agent "先扫描市场趋势，然后根据结果创建一本新书"
 
 ## 命令参考
 
+### Interactive Fiction V1
+
+InkOS 现在支持 `interactive-tree` 叙事模式：
+
+- 章节仍然按正常 `write next` 生成
+- 每章结束后会自动生成 2-4 个读者选项
+- 选中的分支继续写下一章
+- 未选分支会保存在 `story/interactive/branch-tree.json`，后续可切回
+
+最小流程：
+
+```bash
+inkos book create --title "分支书" --genre other --platform tomato --narrative-mode interactive-tree
+inkos write next my-book
+inkos branch choices my-book
+inkos branch choose my-book <choice-id>
+inkos write next my-book
+inkos branch tree my-book
+inkos branch switch my-book <node-id>
+```
+
+`interactive-tree` v1 当前只做章节末分支，不支持自由输入动作；`export` / `review` 默认仍只看当前 active branch。
+
 | 命令 | 说明 |
 |------|------|
 | `inkos init [name]` | 初始化项目（省略 name 在当前目录初始化） |
-| `inkos book create` | 创建新书（`--genre`、`--platform`、`--chapter-words`、`--target-chapters`、`--brief <file>` 传入创作简报） |
+| `inkos book create` | 创建新书（`--genre`、`--platform`、`--chapter-words`、`--target-chapters`、`--brief <file>`、`--narrative-mode linear/interactive-tree`） |
 | `inkos book update [id]` | 修改书设置（`--chapter-words`、`--target-chapters`、`--status`） |
 | `inkos book list` | 列出所有书籍 |
 | `inkos book delete <id>` | 删除书籍及全部数据（`--force` 跳过确认） |
@@ -350,6 +373,10 @@ inkos agent "先扫描市场趋势，然后根据结果创建一本新书"
 | `inkos review list [id]` | 审阅草稿 |
 | `inkos review approve-all [id]` | 批量通过 |
 | `inkos status [id]` | 项目状态 |
+| `inkos branch tree [id]` | 查看互动分支树 |
+| `inkos branch choices [id]` | 查看当前 active branch 的待选项 |
+| `inkos branch choose [id] <choice-id>` | 选择一个待选分支 |
+| `inkos branch switch [id] <node-id>` | 切换到已有分支并恢复对应快照 |
 | `inkos export [id]` | 导出书籍（`--format txt/md/epub`、`--output <path>`、`--approved-only`） |
 | `inkos radar scan` | 扫描平台趋势 |
 | `inkos fanfic init` | 从原作素材创建同人书（`--from`、`--mode canon/au/ooc/cp`） |

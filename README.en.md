@@ -343,10 +343,33 @@ inkos agent "Create a progression fantasy about a mage who can only use one spel
 
 ## CLI Reference
 
+### Interactive Fiction V1
+
+InkOS now supports an `interactive-tree` narrative mode:
+
+- chapters are still written through the normal `write next` flow
+- each completed chapter generates 2-4 reader-facing branch choices
+- the selected branch continues writing
+- unselected branches remain recoverable in `story/interactive/branch-tree.json`
+
+Minimal flow:
+
+```bash
+inkos book create --title "Branch Book" --genre other --platform tomato --narrative-mode interactive-tree
+inkos write next my-book
+inkos branch choices my-book
+inkos branch choose my-book <choice-id>
+inkos write next my-book
+inkos branch tree my-book
+inkos branch switch my-book <node-id>
+```
+
+`interactive-tree` v1 is chapter-end branching only for now. Free-form player actions are out of scope, and `export` / `review` still operate on the active branch by default.
+
 | Command | Description |
 |---------|-------------|
 | `inkos init [name]` | Initialize project (omit name to init current directory) |
-| `inkos book create` | Create a new book (`--genre`, `--chapter-words`, `--target-chapters`, `--brief <file>`, `--lang en/zh`) |
+| `inkos book create` | Create a new book (`--genre`, `--chapter-words`, `--target-chapters`, `--brief <file>`, `--lang en/zh`, `--narrative-mode linear/interactive-tree`) |
 | `inkos book update [id]` | Update book settings (`--chapter-words`, `--target-chapters`, `--status`, `--lang`) |
 | `inkos book list` | List all books |
 | `inkos book delete <id>` | Delete a book and all its data (`--force` to skip confirmation) |
@@ -362,6 +385,10 @@ inkos agent "Create a progression fantasy about a mage who can only use one spel
 | `inkos review list [id]` | Review drafts |
 | `inkos review approve-all [id]` | Batch approve |
 | `inkos status [id]` | Project status |
+| `inkos branch tree [id]` | Show the interactive branch tree |
+| `inkos branch choices [id]` | Show pending choices on the active branch |
+| `inkos branch choose [id] <choice-id>` | Choose one pending branch option |
+| `inkos branch switch [id] <node-id>` | Switch to an existing branch and restore its snapshot |
 | `inkos export [id]` | Export book (`--format txt/md/epub`, `--output <path>`, `--approved-only`) |
 | `inkos fanfic init` | Create a fanfic book from source material (`--from`, `--mode canon/au/ooc/cp`) |
 | `inkos config set-global` | Set global LLM config (~/.inkos/.env) |
