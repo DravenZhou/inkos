@@ -28,8 +28,7 @@ import {
   printStyledHelp,
   printStyledStatus,
   printInputSeparator,
-  drawInputBoxTop,
-  drawInputBoxBottom,
+  drawInputLine,
 } from "./effects.js";
 
 /* ── Version ── */
@@ -207,30 +206,37 @@ export async function launchTui(
     return;
   }
 
-  // 7. REPL loop
+  // 7. Suppress noisy Node warnings (e.g. SQLite experimental)
+  const origStderrWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk: string | Uint8Array, ...args: unknown[]) => {
+    const s = typeof chunk === "string" ? chunk : chunk.toString();
+    if (s.includes("ExperimentalWarning") || s.includes("--trace-warnings")) {
+      return true;
+    }
+    return (origStderrWrite as Function)(chunk, ...args);
+  };
+
+  // 8. REPL loop
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: `  ${c("│", gray)} ${c("❯", brightCyan)} `,
+    prompt: `  ${c("❯", gray)} `,
   });
 
   const cleanup = () => {
+    process.stderr.write = origStderrWrite;
     process.stdout.write(showCursor);
     rl.close();
   };
 
   const promptInput = () => {
-    drawInputBoxTop();
+    drawInputLine();
+    console.log();
     rl.prompt();
-  };
-
-  const closeInputBox = () => {
-    drawInputBoxBottom();
   };
 
   process.on("SIGINT", () => {
     console.log();
-    closeInputBox();
     console.log(c("  ◇ goodbye", dim));
     console.log();
     cleanup();
@@ -240,13 +246,14 @@ export async function launchTui(
   promptInput();
 
   for await (const line of rl) {
-    closeInputBox();
     const input = line.trim();
 
     if (!input) {
       promptInput();
       continue;
     }
+
+    console.log();
 
     // Built-in TUI commands
     if (/^\/quit$/i.test(input) || /^\/exit$/i.test(input) || /^(quit|exit|bye)$/i.test(input)) {
@@ -256,14 +263,12 @@ export async function launchTui(
     }
 
     if (/^\/help$/i.test(input) || /^(help|帮助)$/i.test(input)) {
-      console.log();
       printStyledHelp();
       promptInput();
       continue;
     }
 
     if (/^\/status$/i.test(input) || /^(status|状态)$/i.test(input)) {
-      console.log();
       try {
         const s = await loadProjectSession(projectRoot);
         const bId = await resolveSessionActiveBook(projectRoot, s);
@@ -287,7 +292,6 @@ export async function launchTui(
     }
 
     // Delegate to interaction layer with themed animation
-    console.log();
     await processInput(projectRoot, input, tools);
     console.log();
 

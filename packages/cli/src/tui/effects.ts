@@ -161,19 +161,11 @@ const ASCII_LOGO = [
   " ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝",
 ];
 
-/* ── Input box ── */
+/* ── Input area ── */
 
-export function drawInputBoxTop(): void {
-  const w = Math.min(process.stdout.columns ?? 60, 60);
-  const label = c(" inkos ", dim);
-  const labelLen = 7; // visible length of " inkos "
-  const lineLen = w - 4 - 2 - labelLen; // ╭─ + label + ─...─
-  process.stdout.write(`  ${c("╭─", gray)}${label}${c("─".repeat(Math.max(0, lineLen)), gray)}\n`);
-}
-
-export function drawInputBoxBottom(): void {
-  const w = Math.min(process.stdout.columns ?? 60, 60);
-  process.stdout.write(`  ${c("╰" + "─".repeat(w - 5), gray)}\n`);
+export function drawInputLine(): void {
+  const w = process.stdout.columns ?? 80;
+  console.log(c("  " + "─".repeat(w - 4), gray));
 }
 
 export function printInputSeparator(): void {
