@@ -139,12 +139,6 @@ export function InkTuiDashboard(props: InkTuiDashboardProps): React.JSX.Element 
               </Text>
             ) : null}
           </Box>
-          <Box>
-            <Text color={props.isSubmitting ? STATUS_ACTIVE : WARM_MUTED}>
-              {model.composerStatus}
-            </Text>
-          </Box>
-
           {/* Slash command suggestions */}
           {props.slashSuggestions && props.slashSuggestions.length > 0 ? (
             <Box flexDirection="column" marginTop={1} borderTop borderColor={WARM_BORDER}>
