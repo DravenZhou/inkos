@@ -185,28 +185,26 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
           ],
         }),
       });
-      setStatus({ state: "saved" });
-      void refreshServices();
-      // After 1.5s, transition to correct state
-      setTimeout(() => {
-        if (trimmedKey) {
-          setStatus({ state: "testing" });
-          fetchJson<{ models: ModelInfo[] }>(`/services/${encodeURIComponent(effectiveServiceId)}/models`)
-            .then((data) => {
-              const m = data.models ?? [];
-              if (m.length > 0) {
-                setStatus({ state: "connected", models: m });
-                setStoreModels(effectiveServiceId, m); // Cache for chat picker
-              } else {
-                setStatus({ state: "idle" });
-              }
-            })
-            .catch(() => setStatus({ state: "idle" }));
-        } else {
-          clearStoreModels(effectiveServiceId);
-          setStatus({ state: "idle" });
+      if (trimmedKey) {
+        try {
+          const data = await fetchJson<{ models: ModelInfo[] }>(`/services/${encodeURIComponent(effectiveServiceId)}/models`);
+          const m = data.models ?? [];
+          if (m.length > 0) {
+            setStoreModels(effectiveServiceId, m);
+            setStatus({ state: "connected", models: m });
+          } else {
+            setStatus({ state: "saved" });
+          }
+        } catch {
+          setStatus({ state: "saved" });
         }
-      }, 1500);
+      } else {
+        clearStoreModels(effectiveServiceId);
+        setStatus({ state: "saved" });
+      }
+
+      await refreshServices();
+      nav.toServices();
     } catch (e) {
       setStatus({ state: "error", message: e instanceof Error ? e.message : "保存失败" });
     }
@@ -215,8 +213,12 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   return (
     <div className="max-w-xl mx-auto space-y-6">
       {/* Back */}
-      <button onClick={nav.toServices} className="flex items-center gap-1.5 text-sm text-muted-foreground/70 hover:text-foreground transition-colors">
-        <ArrowLeft size={14} /> 返回
+      <button
+        onClick={nav.toServices}
+        className="inline-flex items-center gap-2 rounded-lg border border-border/50 bg-card/60 px-3 py-2 text-sm font-medium text-foreground hover:bg-secondary/50 transition-colors"
+      >
+        <ArrowLeft size={14} />
+        返回服务商管理
       </button>
 
       {/* Title + status */}

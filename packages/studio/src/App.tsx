@@ -23,6 +23,7 @@ import { useTheme } from "./hooks/use-theme";
 import { useI18n } from "./hooks/use-i18n";
 import { postApi, putApi, useApi } from "./hooks/use-api";
 import { Sun, Moon } from "lucide-react";
+import { House } from "lucide-react";
 
 export type { HashRoute as Route } from "./hooks/use-hash-route";
 
@@ -112,8 +113,14 @@ export function App() {
         {/* Header Strip */}
         <header className="h-14 shrink-0 flex items-center justify-between px-8 border-b border-border/40">
           <div className="flex items-center gap-2">
-             <button onClick={nav.toDashboard} className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground font-bold hover:text-foreground transition-colors">
-               InkOS Studio
+             <button
+               onClick={nav.toDashboard}
+               className="inline-flex items-center gap-2 rounded-lg border border-border/50 bg-card/70 px-3 py-1.5 text-sm font-semibold text-foreground hover:bg-secondary/50 transition-colors"
+             >
+               <House size={14} />
+               <span>首页</span>
+               <span className="text-muted-foreground/70">/</span>
+               <span className="font-serif">InkOS Studio</span>
              </button>
           </div>
 
