@@ -28,6 +28,9 @@ const loadBookSessionMock = vi.fn();
 const persistBookSessionMock = vi.fn();
 const appendBookSessionMessageMock = vi.fn();
 const resolveServiceModelMock = vi.fn();
+const loadSecretsMock = vi.fn();
+const saveSecretsMock = vi.fn();
+const getServiceApiKeyMock = vi.fn();
 
 const logger = {
   child: () => logger,
@@ -124,6 +127,9 @@ vi.mock("@actalk/inkos-core", () => {
     persistBookSession: persistBookSessionMock,
     appendBookSessionMessage: appendBookSessionMessageMock,
     resolveServiceModel: resolveServiceModelMock,
+    loadSecrets: loadSecretsMock,
+    saveSecrets: saveSecretsMock,
+    getServiceApiKey: getServiceApiKeyMock,
     GLOBAL_ENV_PATH: join(tmpdir(), "inkos-global.env"),
   };
 });
@@ -280,6 +286,9 @@ describe("createStudioServer daemon lifecycle", () => {
     persistBookSessionMock.mockReset();
     appendBookSessionMessageMock.mockReset();
     resolveServiceModelMock.mockReset();
+    loadSecretsMock.mockReset();
+    saveSecretsMock.mockReset();
+    getServiceApiKeyMock.mockReset();
     // Default BookSession for agent tests
     const defaultBookSession = {
       sessionId: "agent-session-1",
@@ -298,6 +307,9 @@ describe("createStudioServer daemon lifecycle", () => {
       responseText: "Agent response.",
       messages: [],
     });
+    loadSecretsMock.mockResolvedValue({ services: {} });
+    saveSecretsMock.mockResolvedValue(undefined);
+    getServiceApiKeyMock.mockResolvedValue(undefined);
   });
 
   afterEach(async () => {
