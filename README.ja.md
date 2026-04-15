@@ -3,14 +3,13 @@
   <img src="assets/inkos-text.svg" width="240" height="65" alt="InkOS">
 </p>
 
-<h1 align="center">自律型小説執筆 AIエージェント</h1>
+<h1 align="center">自律型小説執筆 CLI AIエージェント</h1>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@actalk/inkos"><img src="https://img.shields.io/npm/v/@actalk/inkos.svg?color=cb3837&logo=npm" alt="npm version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL-3.0"></a>
-  <a href="https://github.com/Narcooo/inkos/stargazers"><img src="https://img.shields.io/github/stars/Narcooo/inkos?style=flat&logo=github&color=yellow" alt="GitHub stars"></a>
-  <a href="https://www.npmjs.com/package/@actalk/inkos"><img src="https://img.shields.io/npm/dm/@actalk/inkos?color=cb3837&logo=npm&label=downloads" alt="npm downloads"></a>
-  <a href="https://clawhub.ai/narcooo/inkos"><img src="https://img.shields.io/badge/🦞%20ClawHub-Skill-FF6B35?labelColor=1a1a1a" alt="ClawHub Skill"></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node.js"></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.x-3178C6.svg?logo=typescript&logoColor=white" alt="TypeScript"></a>
 </p>
 
 <p align="center">
@@ -20,8 +19,6 @@
 ---
 
 小説の執筆・監査・修正を自律的に行うオープンソースCLIエージェント。人間によるレビューゲートにより、常にコントロールを維持できます。LitRPG、プログレッションファンタジー、異世界転生、ロマンタジー、SF など多数のジャンルに対応。続編・スピンオフ・二次創作・文体模倣ワークフローを内蔵。
-
-**InkOS TUI 正式リリース！** — `inkos` を実行してフルスクリーンのインタラクティブダッシュボードを起動。会話型創作、自然言語での書籍操作、スラッシュコマンド自動補完、テーマアニメーション——TUI、Studio、OpenClaw が同一のインタラクションカーネルを共有。
 
 **InkOS Studio 正式リリース！** — `inkos studio` でローカルWebワークベンチを起動。書籍管理、章のレビュー＆編集、リアルタイム執筆進捗、市場レーダー、アナリティクス、AI検出、スタイル分析、ジャンル管理、デーモン制御、真実ファイル編集 — CLIの全機能をビジュアルで利用可能。
 

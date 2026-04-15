@@ -247,6 +247,7 @@ describe("PipelineRunner", () => {
         projectRoot: process.cwd(),
         defaultLLMConfig: {
           provider: "custom",
+          service: "custom",
           baseUrl: "https://base.example/v1",
           apiKey: "base-key",
           model: "base-model",
@@ -895,6 +896,7 @@ describe("PipelineRunner", () => {
       const result = await runner.writeDraft(bookId);
 
       expect(result.chapterNumber).toBe(1);
+      console.log("DEBUG warnings:", JSON.stringify(warnings, null, 2));
       expect(warnings).toContain(
         "当前 Node 运行时不支持 SQLite 记忆索引，继续使用 Markdown 回退方案。",
       );
@@ -2279,11 +2281,10 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("does not persist chapter files or index entries when state validation errors before save", async () => {
+  it("degrades to state-degraded when state validation errors instead of aborting", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture({
       inputGovernanceMode: "legacy",
     });
-    const chaptersDir = join(state.bookDir(bookId), "chapters");
 
     vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
       createWriterOutput({
@@ -2302,9 +2303,13 @@ describe("PipelineRunner", () => {
       new Error("LLM returned empty response"),
     );
 
-    await expect(runner.writeNextChapter(bookId)).rejects.toThrow("LLM returned empty response");
-    await expect(readdir(chaptersDir)).resolves.toEqual([]);
-    await expect(state.loadChapterIndex(bookId)).resolves.toEqual([]);
+    const result = await runner.writeNextChapter(bookId);
+    expect(result.status).toBe("state-degraded");
+
+    // Chapter should be saved (content is fine, only truth files are degraded)
+    const index = await state.loadChapterIndex(bookId);
+    expect(index).toHaveLength(1);
+    expect(index[0]!.status).toBe("state-degraded");
 
     await rm(root, { recursive: true, force: true });
   });

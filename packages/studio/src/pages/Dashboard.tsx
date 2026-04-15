@@ -1,5 +1,6 @@
 import { fetchJson, useApi, postApi } from "../hooks/use-api";
 import { useEffect, useMemo, useState, useRef } from "react";
+import { useServiceStore } from "../store/service";
 import type { SSEMessage } from "../hooks/use-sse";
 import type { Theme } from "../hooks/use-theme";
 import type { TFunction } from "../hooks/use-i18n";
@@ -37,6 +38,7 @@ interface Nav {
   toBook: (id: string) => void;
   toAnalytics: (id: string) => void;
   toBookCreate: () => void;
+  toServices: () => void;
 }
 
 function BookMenu({ bookId, bookTitle, nav, t, onDelete, onOpenChange }: {
@@ -92,7 +94,7 @@ function BookMenu({ bookId, bookTitle, nav, t, onDelete, onOpenChange }: {
             {t("book.settings")}
           </button>
           <a
-            href={`/api/books/${bookId}/export?format=txt`}
+            href={`/api/v1/books/${bookId}/export?format=txt`}
             download
             onClick={() => setOpen(false)}
             className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-foreground hover:bg-secondary/50 transition-colors cursor-pointer"
@@ -129,6 +131,10 @@ export function Dashboard({ nav, sse, theme, t }: { nav: Nav; sse: { messages: R
   const [menuOpenBookId, setMenuOpenBookId] = useState<string | null>(null);
   const { data, loading, error, refetch } = useApi<{ books: ReadonlyArray<BookSummary> }>("/books");
   const writingBooks = useMemo(() => deriveActiveBookIds(sse.messages), [sse.messages]);
+  const serviceStoreServices = useServiceStore((s) => s.services);
+  const fetchServices = useServiceStore((s) => s.fetchServices);
+  useEffect(() => { void fetchServices(); }, [fetchServices]);
+  const hasServices = serviceStoreServices.some((s) => s.connected);
 
   const logEvents = sse.messages.filter((m) => m.event === "log").slice(-8);
   const progressEvent = sse.messages.filter((m) => m.event === "llm:progress").slice(-1)[0];
@@ -179,6 +185,20 @@ export function Dashboard({ nav, sse, theme, t }: { nav: Nav; sse: { messages: R
 
   return (
     <div className="space-y-12">
+      {!hasServices && (
+        <div className="rounded-lg border border-border/60 bg-card px-5 py-4 mb-8 flex items-center justify-between gap-4">
+          <div>
+            <div className="text-sm font-medium">还没有配置 AI 模型</div>
+            <div className="text-xs text-muted-foreground mt-0.5">配好一个服务商才能开始创作</div>
+          </div>
+          <button
+            onClick={nav.toServices}
+            className="px-4 py-2 text-xs rounded-lg bg-primary text-primary-foreground font-medium hover:bg-primary/90 transition-colors shrink-0"
+          >
+            去配置
+          </button>
+        </div>
+      )}
       <div className="flex items-end justify-between border-b border-border/40 pb-8">
         <div>
           <h1 className="font-serif text-4xl mb-2">{t("dash.title")}</h1>

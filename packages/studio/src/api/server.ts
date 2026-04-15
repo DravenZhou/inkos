@@ -11,19 +11,98 @@ import {
   computeAnalytics,
   loadProjectConfig,
   loadProjectSession,
-  processProjectInteractionInput,
   processProjectInteractionRequest,
   resolveSessionActiveBook,
+  findOrCreateBookSession,
+  listBookSessions,
+  loadBookSession,
+  persistBookSession,
+  appendBookSessionMessage,
+  runAgentSession,
+  resolveServiceModel,
+  loadSecrets,
+  saveSecrets,
+  type ResolvedModel,
   type PipelineConfig,
   type ProjectConfig,
   type LogSink,
   type LogEntry,
+  type BookSession,
 } from "@actalk/inkos-core";
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isSafeBookId } from "./safety.js";
 import { ApiError } from "./errors.js";
 import { buildStudioBookConfig } from "./book-create.js";
+
+// -- Pipeline stage definitions per agent type --
+
+const PIPELINE_STAGES: Record<string, string[]> = {
+  writer: [
+    "准备章节输入", "撰写章节草稿", "落盘最终章节",
+    "生成最终真相文件", "校验真相文件变更", "同步记忆索引",
+    "更新章节索引与快照",
+  ],
+  architect: [
+    "生成基础设定", "保存书籍配置", "写入基础设定文件",
+    "初始化控制文档", "创建初始快照",
+  ],
+  reviser: [
+    "加载修订上下文", "修订章节", "落盘修订结果",
+    "更新索引与快照",
+  ],
+  auditor: ["审计章节"],
+};
+
+const AGENT_LABELS: Record<string, string> = {
+  architect: "建书", writer: "写作", auditor: "审计",
+  reviser: "修订", exporter: "导出",
+};
+const TOOL_LABELS: Record<string, string> = {
+  read: "读取文件", edit: "编辑文件", grep: "搜索", ls: "列目录",
+};
+
+function resolveToolLabel(tool: string, agent?: string): string {
+  if (tool === "sub_agent" && agent) return AGENT_LABELS[agent] ?? agent;
+  return TOOL_LABELS[tool] ?? tool;
+}
+
+function summarizeResult(result: unknown): string {
+  if (typeof result === "string") return result.slice(0, 200);
+  if (result && typeof result === "object") {
+    const r = result as Record<string, unknown>;
+    if (typeof r.content === "string") return r.content.slice(0, 200);
+    if (typeof r.text === "string") return r.text.slice(0, 200);
+  }
+  return String(result).slice(0, 200);
+}
+
+function extractToolError(result: unknown): string {
+  if (typeof result === "string") return result.slice(0, 500);
+  if (result && typeof result === "object") {
+    const r = result as Record<string, unknown>;
+    if (typeof r.content === "string") return r.content.slice(0, 500);
+    if (r.content && Array.isArray(r.content)) {
+      const textPart = r.content.find((c: any) => c.type === "text");
+      if (textPart) return (textPart as any).text?.slice(0, 500) ?? "";
+    }
+  }
+  return String(result).slice(0, 500);
+}
+
+interface CollectedToolExec {
+  id: string;
+  tool: string;
+  agent?: string;
+  label: string;
+  status: "running" | "completed" | "error";
+  args?: Record<string, unknown>;
+  result?: string;
+  error?: string;
+  stages?: Array<{ label: string; status: "pending" | "completed" }>;
+  startedAt: number;
+  completedAt?: number;
+}
 
 // --- Event bus for SSE ---
 
@@ -58,14 +137,14 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
   });
 
   // BookId validation middleware — blocks path traversal on all book routes
-  app.use("/api/books/:id/*", async (c, next) => {
+  app.use("/api/v1/books/:id/*", async (c, next) => {
     const bookId = c.req.param("id");
     if (!isSafeBookId(bookId)) {
       throw new ApiError(400, "INVALID_BOOK_ID", `Invalid book ID: "${bookId}"`);
     }
     await next();
   });
-  app.use("/api/books/:id", async (c, next) => {
+  app.use("/api/v1/books/:id", async (c, next) => {
     const bookId = c.req.param("id");
     if (!isSafeBookId(bookId)) {
       throw new ApiError(400, "INVALID_BOOK_ID", `Invalid book ID: "${bookId}"`);
@@ -80,6 +159,16 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     },
   };
 
+  // Logger sink that prints to server terminal
+  const consoleSink: LogSink = {
+    write(entry: LogEntry): void {
+      const prefix = `[${entry.tag}]`;
+      if (entry.level === "warn") console.warn(prefix, entry.message);
+      else if (entry.level === "error") console.error(prefix, entry.message);
+      else console.log(prefix, entry.message);
+    },
+  };
+
   async function loadCurrentProjectConfig(
     options?: { readonly requireApiKey?: boolean },
   ): Promise<ProjectConfig> {
@@ -89,26 +178,25 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
   }
 
   async function buildPipelineConfig(
-    overrides?: Partial<Pick<PipelineConfig, "externalContext">>,
+    overrides?: Partial<Pick<PipelineConfig, "externalContext" | "client" | "model">>,
   ): Promise<PipelineConfig> {
     const currentConfig = await loadCurrentProjectConfig();
-    const logger = createLogger({ tag: "studio", sinks: [sseSink] });
+    const logger = createLogger({ tag: "studio", sinks: [sseSink, consoleSink] });
     return {
-      client: createLLMClient(currentConfig.llm),
-      model: currentConfig.llm.model,
+      client: overrides?.client ?? createLLMClient(currentConfig.llm),
+      model: overrides?.model ?? currentConfig.llm.model,
       projectRoot: root,
       defaultLLMConfig: currentConfig.llm,
       modelOverrides: currentConfig.modelOverrides,
       notifyChannels: currentConfig.notify,
       logger,
       onStreamProgress: (progress) => {
-        if (progress.status === "streaming") {
-          broadcast("llm:progress", {
-            elapsedMs: progress.elapsedMs,
-            totalChars: progress.totalChars,
-            chineseChars: progress.chineseChars,
-          });
-        }
+        broadcast("llm:progress", {
+          status: progress.status,
+          elapsedMs: progress.elapsedMs,
+          totalChars: progress.totalChars,
+          chineseChars: progress.chineseChars,
+        });
       },
       externalContext: overrides?.externalContext,
     };
@@ -116,7 +204,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Books ---
 
-  app.get("/api/books", async (c) => {
+  app.get("/api/v1/books", async (c) => {
     const bookIds = await state.listBooks();
     const books = await Promise.all(
       bookIds.map(async (id) => {
@@ -128,7 +216,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     return c.json({ books });
   });
 
-  app.get("/api/books/:id", async (c) => {
+  app.get("/api/v1/books/:id", async (c) => {
     const id = c.req.param("id");
     try {
       const book = await state.loadBookConfig(id);
@@ -142,7 +230,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Genres ---
 
-  app.get("/api/genres", async (c) => {
+  app.get("/api/v1/genres", async (c) => {
     const { listAvailableGenres, readGenreProfile } = await import("@actalk/inkos-core");
     const rawGenres = await listAvailableGenres(root);
     const genres = await Promise.all(
@@ -160,7 +248,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Book Create ---
 
-  app.post("/api/books/create", async (c) => {
+  app.post("/api/v1/books/create", async (c) => {
     const body = await c.req.json<{
       title: string;
       genre: string;
@@ -219,7 +307,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     return c.json({ status: "creating", bookId });
   });
 
-  app.get("/api/books/:id/create-status", async (c) => {
+  app.get("/api/v1/books/:id/create-status", async (c) => {
     const id = c.req.param("id");
     const status = bookCreateStatus.get(id);
     if (!status) {
@@ -230,7 +318,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Chapters ---
 
-  app.get("/api/books/:id/chapters/:num", async (c) => {
+  app.get("/api/v1/books/:id/chapters/:num", async (c) => {
     const id = c.req.param("id");
     const num = parseInt(c.req.param("num"), 10);
     const bookDir = state.bookDir(id);
@@ -250,7 +338,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Chapter Save ---
 
-  app.put("/api/books/:id/chapters/:num", async (c) => {
+  app.put("/api/v1/books/:id/chapters/:num", async (c) => {
     const id = c.req.param("id");
     const num = parseInt(c.req.param("num"), 10);
     const bookDir = state.bookDir(id);
@@ -281,7 +369,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     "style_guide.md", "parent_canon.md", "fanfic_canon.md", "book_rules.md",
   ];
 
-  app.get("/api/books/:id/truth/:file", async (c) => {
+  app.get("/api/v1/books/:id/truth/:file", async (c) => {
     const id = c.req.param("id");
     const file = c.req.param("file");
 
@@ -300,7 +388,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Analytics ---
 
-  app.get("/api/books/:id/analytics", async (c) => {
+  app.get("/api/v1/books/:id/analytics", async (c) => {
     const id = c.req.param("id");
     try {
       const chapters = await state.loadChapterIndex(id);
@@ -312,7 +400,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Actions ---
 
-  app.post("/api/books/:id/write-next", async (c) => {
+  app.post("/api/v1/books/:id/write-next", async (c) => {
     const id = c.req.param("id");
     const body = await c.req.json<{ wordCount?: number }>().catch(() => ({ wordCount: undefined }));
 
@@ -332,7 +420,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     return c.json({ status: "writing", bookId: id });
   });
 
-  app.post("/api/books/:id/draft", async (c) => {
+  app.post("/api/v1/books/:id/draft", async (c) => {
     const id = c.req.param("id");
     const body = await c.req.json<{ wordCount?: number; context?: string }>().catch(() => ({ wordCount: undefined, context: undefined }));
 
@@ -351,7 +439,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     return c.json({ status: "drafting", bookId: id });
   });
 
-  app.post("/api/books/:id/chapters/:num/approve", async (c) => {
+  app.post("/api/v1/books/:id/chapters/:num/approve", async (c) => {
     const id = c.req.param("id");
     const num = parseInt(c.req.param("num"), 10);
 
@@ -367,7 +455,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     }
   });
 
-  app.post("/api/books/:id/chapters/:num/reject", async (c) => {
+  app.post("/api/v1/books/:id/chapters/:num/reject", async (c) => {
     const id = c.req.param("id");
     const num = parseInt(c.req.param("num"), 10);
 
@@ -394,7 +482,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- SSE ---
 
-  app.get("/api/events", (c) => {
+  app.get("/api/v1/events", (c) => {
     return streamSSE(c, async (stream) => {
       const handler: EventHandler = (event, data) => {
         stream.writeSSE({ event, data: JSON.stringify(data) });
@@ -416,9 +504,158 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     });
   });
 
+  // --- Model discovery ---
+
+  app.get("/api/v1/services", async (c) => {
+    const { resolveServicePreset } = await import("@actalk/inkos-core");
+    const secrets = await loadSecrets(root);
+
+    const SERVICE_KEYS = [
+      "openai", "anthropic", "deepseek", "moonshot", "minimax",
+      "bailian", "zhipu", "siliconflow", "ppio", "openrouter", "ollama",
+    ];
+
+    // Fast: only check connection status from secrets, no external API calls
+    const services = SERVICE_KEYS.map((key) => {
+      const preset = resolveServicePreset(key);
+      return {
+        service: key,
+        label: preset?.label ?? key,
+        connected: Boolean(secrets.services[key]?.apiKey),
+      };
+    });
+
+    // Add custom services from inkos.json
+    try {
+      const configPath = join(root, "inkos.json");
+      const raw = await readFile(configPath, "utf-8");
+      const config = JSON.parse(raw);
+      for (const svc of config.llm?.services ?? []) {
+        if (svc.service === "custom") {
+          const secretKey = `custom:${svc.name}`;
+          services.push({
+            service: secretKey,
+            label: svc.name ?? "Custom",
+            connected: Boolean(secrets.services[secretKey]?.apiKey),
+          });
+        }
+      }
+    } catch { /* no config file */ }
+
+    return c.json({ services });
+  });
+
+  app.get("/api/v1/services/config", async (c) => {
+    const configPath = join(root, "inkos.json");
+    const raw = await readFile(configPath, "utf-8");
+    const config = JSON.parse(raw);
+    const services = config.llm?.services ?? [];
+    return c.json({ services, defaultModel: config.llm?.defaultModel ?? null });
+  });
+
+  app.put("/api/v1/services/config", async (c) => {
+    const body = await c.req.json<{ services: any[]; defaultModel?: string }>();
+    const configPath = join(root, "inkos.json");
+    const raw = await readFile(configPath, "utf-8");
+    const config = JSON.parse(raw);
+    config.llm = config.llm ?? {};
+    config.llm.services = body.services;
+    if (body.defaultModel !== undefined) {
+      config.llm.defaultModel = body.defaultModel;
+    }
+    await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/v1/services/:service/test", async (c) => {
+    const { resolveServicePreset } = await import("@actalk/inkos-core");
+    const service = c.req.param("service");
+    const { apiKey } = await c.req.json<{ apiKey: string }>();
+
+    if (!apiKey?.trim()) {
+      return c.json({ ok: false, error: "API Key 不能为空" }, 400);
+    }
+
+    const preset = resolveServicePreset(service);
+    if (!preset?.baseUrl) {
+      return c.json({ ok: false, error: `未知服务商: ${service}` }, 400);
+    }
+
+    // Call the real /models API — no fallback
+    const modelsUrl = preset.baseUrl.replace(/\/$/, "") + "/models";
+    try {
+      const res = await fetch(modelsUrl, {
+        headers: { Authorization: `Bearer ${apiKey.trim()}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        if (res.status === 401 || res.status === 403) {
+          return c.json({ ok: false, error: "API Key 无效，请检查后重试" }, 400);
+        }
+        return c.json({ ok: false, error: `服务商返回 ${res.status}: ${body.slice(0, 200)}` }, 400);
+      }
+
+      const json = await res.json() as { data?: Array<{ id: string; owned_by?: string }> };
+      const models = (json.data ?? []).map((m) => ({ id: m.id, name: m.id }));
+
+      if (models.length === 0) {
+        return c.json({ ok: false, error: "连接成功但未返回可用模型" }, 400);
+      }
+
+      return c.json({ ok: true, modelCount: models.length, models: models.slice(0, 50) });
+    } catch (err: any) {
+      if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+        return c.json({ ok: false, error: `连接超时：无法访问 ${modelsUrl}` }, 400);
+      }
+      return c.json({ ok: false, error: `连接失败: ${err?.message ?? String(err)}` }, 400);
+    }
+  });
+
+  app.put("/api/v1/services/:service/secret", async (c) => {
+    const service = c.req.param("service");
+    const { apiKey } = await c.req.json<{ apiKey: string }>();
+    const secrets = await loadSecrets(root);
+    if (apiKey?.trim()) {
+      secrets.services[service] = { apiKey: apiKey.trim() };
+    } else {
+      delete secrets.services[service];
+    }
+    await saveSecrets(root, secrets);
+    return c.json({ ok: true });
+  });
+
+  app.get("/api/v1/services/:service/models", async (c) => {
+    const { resolveServicePreset, getServiceApiKey } = await import("@actalk/inkos-core");
+    const service = c.req.param("service");
+    const apiKey = c.req.query("apiKey") || await getServiceApiKey(root, service);
+
+    // No key = no models (don't fallback to built-in list)
+    if (!apiKey) return c.json({ models: [] });
+
+    const preset = resolveServicePreset(service);
+    if (!preset?.baseUrl) return c.json({ models: [] });
+
+    // Call real API only
+    let models: Array<{ id: string; name: string }> = [];
+    try {
+      const modelsUrl = preset.baseUrl.replace(/\/$/, "") + "/models";
+      const res = await fetch(modelsUrl, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.ok) {
+        const json = await res.json() as { data?: Array<{ id: string }> };
+        models = (json.data ?? []).map((m) => ({ id: m.id, name: m.id }));
+      }
+    } catch { /* timeout or network error — return empty */ }
+    return c.json({ models });
+  });
+
   // --- Project info ---
 
-  app.get("/api/project", async (c) => {
+  app.get("/api/v1/project", async (c) => {
     const currentConfig = await loadCurrentProjectConfig({ requireApiKey: false });
     // Check if language was explicitly set in inkos.json (not just the schema default)
     const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
@@ -439,7 +676,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Config editing ---
 
-  app.put("/api/project", async (c) => {
+  app.put("/api/v1/project", async (c) => {
     const updates = await c.req.json<Record<string, unknown>>();
     const configPath = join(root, "inkos.json");
     try {
@@ -468,7 +705,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Truth files browser ---
 
-  app.get("/api/books/:id/truth", async (c) => {
+  app.get("/api/v1/books/:id/truth", async (c) => {
     const id = c.req.param("id");
     const bookDir = state.bookDir(id);
     const storyDir = join(bookDir, "story");
@@ -491,13 +728,13 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   let schedulerInstance: import("@actalk/inkos-core").Scheduler | null = null;
 
-  app.get("/api/daemon", (c) => {
+  app.get("/api/v1/daemon", (c) => {
     return c.json({
       running: schedulerInstance?.isRunning ?? false,
     });
   });
 
-  app.post("/api/daemon/start", async (c) => {
+  app.post("/api/v1/daemon/start", async (c) => {
     if (schedulerInstance?.isRunning) {
       return c.json({ error: "Daemon already running" }, 400);
     }
@@ -537,7 +774,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     }
   });
 
-  app.post("/api/daemon/stop", (c) => {
+  app.post("/api/v1/daemon/stop", (c) => {
     if (!schedulerInstance?.isRunning) {
       return c.json({ error: "Daemon not running" }, 400);
     }
@@ -549,7 +786,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Logs ---
 
-  app.get("/api/logs", async (c) => {
+  app.get("/api/v1/logs", async (c) => {
     const logPath = join(root, "inkos.log");
     try {
       const content = await readFile(logPath, "utf-8");
@@ -565,7 +802,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Agent chat ---
 
-  app.get("/api/interaction/session", async (c) => {
+  app.get("/api/v1/interaction/session", async (c) => {
     const session = await loadProjectSession(root);
     const activeBookId = await resolveSessionActiveBook(root, session);
     return c.json({
@@ -576,8 +813,42 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     });
   });
 
-  app.post("/api/agent", async (c) => {
-    const { instruction, activeBookId } = await c.req.json<{ instruction: string; activeBookId?: string }>();
+  // -- Per-book session endpoints --
+
+  app.get("/api/v1/sessions", async (c) => {
+    const bookId = c.req.query("bookId");
+    const sessions = await listBookSessions(root, bookId === undefined ? null : bookId === "null" ? null : bookId);
+    return c.json({ sessions: sessions.map((s) => ({
+      sessionId: s.sessionId,
+      bookId: s.bookId,
+      messageCount: s.messages.length,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+    })) });
+  });
+
+  app.get("/api/v1/sessions/:sessionId", async (c) => {
+    const session = await loadBookSession(root, c.req.param("sessionId"));
+    if (!session) return c.json({ error: "Session not found" }, 404);
+    return c.json({ session });
+  });
+
+  app.post("/api/v1/sessions", async (c) => {
+    const body = await c.req.json<{ bookId?: string | null }>().catch(() => ({}));
+    const bookId = (body as { bookId?: string | null }).bookId ?? null;
+    const session = await findOrCreateBookSession(root, bookId);
+    return c.json({ session });
+  });
+
+  app.post("/api/v1/agent", async (c) => {
+    const { instruction, activeBookId, sessionId: reqSessionId, model: reqModel, service: reqService } = await c.req.json<{
+      instruction: string;
+      activeBookId?: string;
+      sessionId?: string;
+      model?: string;
+      service?: string;
+    }>();
+    const sessionId = reqSessionId;
     if (!instruction?.trim()) {
       return c.json({ error: "No instruction provided" }, 400);
     }
@@ -585,33 +856,230 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     broadcast("agent:start", { instruction, activeBookId });
 
     try {
-      const pipeline = new PipelineRunner(await buildPipelineConfig());
-      const tools = createInteractionToolsFromDeps(pipeline, state);
-      const result = await processProjectInteractionInput({
-        projectRoot: root,
-        input: instruction,
-        tools,
-        activeBookId,
-      });
-      const response = result.responseText ?? "Acknowledged.";
+      // Load config + create LLM client (pipeline created after model resolution)
+      const config = await loadCurrentProjectConfig({ requireApiKey: true });
+      const client = createLLMClient(config.llm);
 
-      broadcast("agent:complete", { instruction, activeBookId, response });
-      return c.json({ response, session: result.session, request: result.request });
+      // Resolve or create BookSession for history
+      let bookSession: BookSession;
+      if (sessionId) {
+        bookSession =
+          (await loadBookSession(root, sessionId)) ??
+          (await findOrCreateBookSession(root, activeBookId ?? null));
+      } else {
+        bookSession = await findOrCreateBookSession(root, activeBookId ?? null);
+      }
+
+      // Build initial message context from persisted session
+      const initialMessages = bookSession.messages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+
+      // Resolve model — multi-service resolution
+      let resolvedModel: ResolvedModel["model"] | undefined;
+      let resolvedApiKey: string | undefined;
+
+      if (reqService && reqModel) {
+        // 1. Frontend explicitly selected a service+model — fail loudly if no key
+        try {
+          const resolved = await resolveServiceModel(reqService, reqModel, root);
+          resolvedModel = resolved.model;
+          resolvedApiKey = resolved.apiKey;
+        } catch (e: any) {
+          const msg = e?.message ?? String(e);
+          if (/API key/i.test(msg)) {
+            return c.json({
+              error: `请先为 ${reqService} 配置 API Key`,
+              response: `请先在模型配置中为 ${reqService} 填写 API Key，然后再试。`,
+            }, 400);
+          }
+          throw e;
+        }
+      }
+
+      if (!resolvedModel) {
+        // 2. Try defaultModel from new config format
+        const rawConfig = config.llm as unknown as Record<string, unknown>;
+        const defaultModel = rawConfig.defaultModel as string | undefined;
+        const servicesArr = Array.isArray(rawConfig.services) ? rawConfig.services : [];
+        const firstService = (servicesArr as Array<{ service: string }>)[0];
+        if (firstService?.service && defaultModel) {
+          try {
+            const resolved = await resolveServiceModel(firstService.service, defaultModel, root);
+            resolvedModel = resolved.model;
+            resolvedApiKey = resolved.apiKey;
+          } catch { /* fall through */ }
+        }
+      }
+
+      if (!resolvedModel) {
+        // 3. Try first connected service from secrets
+        const secrets = await loadSecrets(root);
+        for (const [svcName, svcData] of Object.entries(secrets.services)) {
+          if (svcData?.apiKey && !svcName.startsWith("custom:")) {
+            try {
+              const { listModelsForService: listModels } = await import("@actalk/inkos-core");
+              const models = await listModels(svcName, svcData.apiKey);
+              if (models.length > 0) {
+                const resolved = await resolveServiceModel(svcName, models[0].id, root);
+                resolvedModel = resolved.model;
+                resolvedApiKey = resolved.apiKey;
+                break;
+              }
+            } catch { /* try next */ }
+          }
+        }
+      }
+
+      if (!resolvedModel) {
+        // 4. Legacy fallback: use createLLMClient
+        resolvedModel = client._piModel
+          ? client._piModel
+          : { provider: config.llm.provider ?? "anthropic", modelId: config.llm.model } as any;
+        resolvedApiKey = client._apiKey;
+      }
+
+      const model = resolvedModel!;
+      const agentApiKey = resolvedApiKey;
+
+      // Create pipeline with resolved model (so sub_agent tools use the frontend-selected model)
+      // Don't spread config.llm — its baseUrl/provider belong to the old service.
+      // Let createLLMClient resolve baseUrl from the service preset.
+      const pipelineClient = (reqService && reqModel && resolvedApiKey)
+        ? createLLMClient({
+            ...config.llm,
+            service: reqService,
+            model: reqModel,
+            apiKey: resolvedApiKey,
+            baseUrl: "",  // let createLLMClient resolve from service preset
+          } as any)
+        : client;
+      const pipeline = new PipelineRunner(await buildPipelineConfig({
+        client: pipelineClient,
+        model: reqModel ?? config.llm.model,
+      }));
+
+      // Run pi-agent session
+      const collectedToolExecs: CollectedToolExec[] = [];
+      const result = await runAgentSession(
+        {
+          model,
+          apiKey: agentApiKey,
+          pipeline,
+          projectRoot: root,
+          bookId: activeBookId ?? null,
+          sessionId: bookSession.sessionId,
+          language: config.language ?? "zh",
+          onEvent: (event) => {
+            if (event.type === "message_update") {
+              const ame = event.assistantMessageEvent;
+              if (ame.type === "text_delta") {
+                broadcast("draft:delta", { text: ame.delta });
+              } else if (ame.type === "thinking_delta") {
+                broadcast("thinking:delta", { text: (ame as any).delta });
+              } else if (ame.type === "thinking_start") {
+                broadcast("thinking:start", {});
+              } else if (ame.type === "thinking_end") {
+                broadcast("thinking:end", {});
+              }
+            }
+            if (event.type === "tool_execution_start") {
+              const args = event.args as Record<string, unknown> | undefined;
+              const agent = event.toolName === "sub_agent" ? (args?.agent as string | undefined) : undefined;
+              const stages = agent ? (PIPELINE_STAGES[agent] ?? []) : [];
+
+              collectedToolExecs.push({
+                id: event.toolCallId,
+                tool: event.toolName,
+                agent,
+                label: resolveToolLabel(event.toolName, agent),
+                status: "running",
+                args,
+                stages: stages.length > 0
+                  ? stages.map(l => ({ label: l, status: "pending" as const }))
+                  : undefined,
+                startedAt: Date.now(),
+              });
+
+              broadcast("tool:start", {
+                id: event.toolCallId,
+                tool: event.toolName,
+                args,
+                stages,
+              });
+            }
+            if (event.type === "tool_execution_update") {
+              broadcast("tool:update", { tool: event.toolName, partialResult: event.partialResult });
+            }
+            if (event.type === "tool_execution_end") {
+              const exec = collectedToolExecs.find(t => t.id === event.toolCallId);
+              if (exec) {
+                exec.status = event.isError ? "error" : "completed";
+                exec.completedAt = Date.now();
+                exec.stages = exec.stages?.map(s => ({ ...s, status: "completed" as const }));
+                if (event.isError) exec.error = extractToolError(event.result);
+                else exec.result = summarizeResult(event.result);
+              }
+              broadcast("tool:end", {
+                id: event.toolCallId,
+                tool: event.toolName,
+                result: event.result,
+                isError: event.isError,
+              });
+            }
+          },
+        },
+        instruction,
+        initialMessages,
+      );
+
+      // Persist user + assistant messages to BookSession
+      bookSession = appendBookSessionMessage(bookSession, {
+        role: "user",
+        content: instruction,
+        timestamp: Date.now(),
+      });
+      if (result.responseText) {
+        const lastAssistant = result.messages?.filter((m: any) => m.role === "assistant").pop();
+        const thinking = lastAssistant?.thinking;
+        bookSession = appendBookSessionMessage(bookSession, {
+          role: "assistant",
+          content: result.responseText,
+          ...(thinking ? { thinking } : {}),
+          ...(collectedToolExecs.length > 0 ? { toolExecutions: collectedToolExecs } : {}),
+          timestamp: Date.now() + 1,
+        });
+      }
+      await persistBookSession(root, bookSession);
+
+      broadcast("agent:complete", { instruction, activeBookId });
+
+      return c.json({
+        response: result.responseText,
+        session: { sessionId: bookSession.sessionId },
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       broadcast("agent:error", { instruction, activeBookId, error: msg });
-      return c.json({
-        error: {
-          code: "INTERACTION_ERROR",
-          message: msg,
-        },
-      }, 500);
+
+      // Agent busy — return 429 with user-friendly message
+      if (/already processing|prompt.*queue/i.test(msg)) {
+        return c.json({
+          error: { code: "AGENT_BUSY", message: "正在处理中，请等待当前操作完成" },
+          response: "正在处理中，请等待当前操作完成后再发送。",
+        }, 429);
+      }
+
+      return c.json(
+        { error: { code: "AGENT_ERROR", message: msg } },
+        500,
+      );
     }
   });
 
   // --- Language setup ---
 
-  app.post("/api/project/language", async (c) => {
+  app.post("/api/v1/project/language", async (c) => {
     const { language } = await c.req.json<{ language: "zh" | "en" }>();
     const configPath = join(root, "inkos.json");
     try {
@@ -628,7 +1096,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Audit ---
 
-  app.post("/api/books/:id/audit/:chapter", async (c) => {
+  app.post("/api/v1/books/:id/audit/:chapter", async (c) => {
     const id = c.req.param("id");
     const chapterNum = parseInt(c.req.param("chapter"), 10);
     const bookDir = state.bookDir(id);
@@ -662,7 +1130,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Revise ---
 
-  app.post("/api/books/:id/revise/:chapter", async (c) => {
+  app.post("/api/v1/books/:id/revise/:chapter", async (c) => {
     const id = c.req.param("id");
     const chapterNum = parseInt(c.req.param("chapter"), 10);
     const bookDir = state.bookDir(id);
@@ -698,7 +1166,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Export ---
 
-  app.get("/api/books/:id/export", async (c) => {
+  app.get("/api/v1/books/:id/export", async (c) => {
     const id = c.req.param("id");
     const format = (c.req.query("format") ?? "txt") as string;
     const approvedOnly = c.req.query("approvedOnly") === "true";
@@ -764,7 +1232,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Export to file (save to project dir) ---
 
-  app.post("/api/books/:id/export-save", async (c) => {
+  app.post("/api/v1/books/:id/export-save", async (c) => {
     const id = c.req.param("id");
     const { format, approvedOnly } = await c.req.json<{ format?: string; approvedOnly?: boolean }>().catch(() => ({ format: "txt", approvedOnly: false }));
     const fmt = format ?? "txt";
@@ -799,7 +1267,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Genre detail + copy ---
 
-  app.get("/api/genres/:id", async (c) => {
+  app.get("/api/v1/genres/:id", async (c) => {
     const genreId = c.req.param("id");
     try {
       const { readGenreProfile } = await import("@actalk/inkos-core");
@@ -810,7 +1278,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     }
   });
 
-  app.post("/api/genres/:id/copy", async (c) => {
+  app.post("/api/v1/genres/:id/copy", async (c) => {
     const genreId = c.req.param("id");
     if (/[/\\\0]/.test(genreId) || genreId.includes("..")) {
       throw new ApiError(400, "INVALID_GENRE_ID", `Invalid genre ID: "${genreId}"`);
@@ -830,12 +1298,12 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Model overrides ---
 
-  app.get("/api/project/model-overrides", async (c) => {
+  app.get("/api/v1/project/model-overrides", async (c) => {
     const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
     return c.json({ overrides: raw.modelOverrides ?? {} });
   });
 
-  app.put("/api/project/model-overrides", async (c) => {
+  app.put("/api/v1/project/model-overrides", async (c) => {
     const { overrides } = await c.req.json<{ overrides: Record<string, unknown> }>();
     const configPath = join(root, "inkos.json");
     const raw = JSON.parse(await readFile(configPath, "utf-8"));
@@ -847,12 +1315,12 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Notify channels ---
 
-  app.get("/api/project/notify", async (c) => {
+  app.get("/api/v1/project/notify", async (c) => {
     const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
     return c.json({ channels: raw.notify ?? [] });
   });
 
-  app.put("/api/project/notify", async (c) => {
+  app.put("/api/v1/project/notify", async (c) => {
     const { channels } = await c.req.json<{ channels: unknown[] }>();
     const configPath = join(root, "inkos.json");
     const raw = JSON.parse(await readFile(configPath, "utf-8"));
@@ -864,7 +1332,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- AIGC Detection ---
 
-  app.post("/api/books/:id/detect/:chapter", async (c) => {
+  app.post("/api/v1/books/:id/detect/:chapter", async (c) => {
     const id = c.req.param("id");
     const chapterNum = parseInt(c.req.param("chapter"), 10);
     const bookDir = state.bookDir(id);
@@ -887,7 +1355,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Truth file edit ---
 
-  app.put("/api/books/:id/truth/:file", async (c) => {
+  app.put("/api/v1/books/:id/truth/:file", async (c) => {
     const id = c.req.param("id");
     const file = c.req.param("file");
     if (!TRUTH_FILES.includes(file)) {
@@ -907,7 +1375,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Book Delete ---
 
-  app.delete("/api/books/:id", async (c) => {
+  app.delete("/api/v1/books/:id", async (c) => {
     const id = c.req.param("id");
     const bookDir = state.bookDir(id);
     try {
@@ -922,7 +1390,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Book Update ---
 
-  app.put("/api/books/:id", async (c) => {
+  app.put("/api/v1/books/:id", async (c) => {
     const id = c.req.param("id");
     const updates = await c.req.json<{
       chapterWordCount?: number;
@@ -949,7 +1417,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Write Rewrite (specific chapter) ---
 
-  app.post("/api/books/:id/rewrite/:chapter", async (c) => {
+  app.post("/api/v1/books/:id/rewrite/:chapter", async (c) => {
     const id = c.req.param("id");
     const chapterNum = parseInt(c.req.param("chapter"), 10);
     const body: { brief?: string } = await c.req
@@ -974,7 +1442,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     }
   });
 
-  app.post("/api/books/:id/resync/:chapter", async (c) => {
+  app.post("/api/v1/books/:id/resync/:chapter", async (c) => {
     const id = c.req.param("id");
     const chapterNum = parseInt(c.req.param("chapter"), 10);
     const body: { brief?: string } = await c.req
@@ -994,7 +1462,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Detect All chapters ---
 
-  app.post("/api/books/:id/detect-all", async (c) => {
+  app.post("/api/v1/books/:id/detect-all", async (c) => {
     const id = c.req.param("id");
     const bookDir = state.bookDir(id);
 
@@ -1020,7 +1488,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Detect Stats ---
 
-  app.get("/api/books/:id/detect/stats", async (c) => {
+  app.get("/api/v1/books/:id/detect/stats", async (c) => {
     const id = c.req.param("id");
     try {
       const { loadDetectionHistory, analyzeDetectionInsights } = await import("@actalk/inkos-core");
@@ -1035,7 +1503,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Genre Create ---
 
-  app.post("/api/genres/create", async (c) => {
+  app.post("/api/v1/genres/create", async (c) => {
     const body = await c.req.json<{
       id: string; name: string; language?: string;
       chapterTypes?: string[]; fatigueWords?: string[];
@@ -1079,7 +1547,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Genre Edit ---
 
-  app.put("/api/genres/:id", async (c) => {
+  app.put("/api/v1/genres/:id", async (c) => {
     const genreId = c.req.param("id");
     if (/[/\\\0]/.test(genreId) || genreId.includes("..")) {
       throw new ApiError(400, "INVALID_GENRE_ID", `Invalid genre ID: "${genreId}"`);
@@ -1115,7 +1583,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Genre Delete (project-level only) ---
 
-  app.delete("/api/genres/:id", async (c) => {
+  app.delete("/api/v1/genres/:id", async (c) => {
     const genreId = c.req.param("id");
     if (/[/\\\0]/.test(genreId) || genreId.includes("..")) {
       throw new ApiError(400, "INVALID_GENRE_ID", `Invalid genre ID: "${genreId}"`);
@@ -1133,7 +1601,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Style Analyze ---
 
-  app.post("/api/style/analyze", async (c) => {
+  app.post("/api/v1/style/analyze", async (c) => {
     const { text, sourceName } = await c.req.json<{ text: string; sourceName: string }>();
     if (!text?.trim()) return c.json({ error: "text is required" }, 400);
 
@@ -1148,7 +1616,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Style Import to Book ---
 
-  app.post("/api/books/:id/style/import", async (c) => {
+  app.post("/api/v1/books/:id/style/import", async (c) => {
     const id = c.req.param("id");
     const { text, sourceName } = await c.req.json<{ text: string; sourceName: string }>();
 
@@ -1166,7 +1634,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Import Chapters ---
 
-  app.post("/api/books/:id/import/chapters", async (c) => {
+  app.post("/api/v1/books/:id/import/chapters", async (c) => {
     const id = c.req.param("id");
     const { text, splitRegex } = await c.req.json<{ text: string; splitRegex?: string }>();
     if (!text?.trim()) return c.json({ error: "text is required" }, 400);
@@ -1188,7 +1656,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Import Canon ---
 
-  app.post("/api/books/:id/import/canon", async (c) => {
+  app.post("/api/v1/books/:id/import/canon", async (c) => {
     const id = c.req.param("id");
     const { fromBookId } = await c.req.json<{ fromBookId: string }>();
     if (!fromBookId) return c.json({ error: "fromBookId is required" }, 400);
@@ -1207,7 +1675,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Fanfic Init ---
 
-  app.post("/api/fanfic/init", async (c) => {
+  app.post("/api/v1/fanfic/init", async (c) => {
     const body = await c.req.json<{
       title: string; sourceText: string; sourceName?: string;
       mode?: string; genre?: string; platform?: string;
@@ -1248,7 +1716,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Fanfic Show (read canon) ---
 
-  app.get("/api/books/:id/fanfic", async (c) => {
+  app.get("/api/v1/books/:id/fanfic", async (c) => {
     const id = c.req.param("id");
     const bookDir = state.bookDir(id);
     try {
@@ -1261,7 +1729,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Fanfic Refresh ---
 
-  app.post("/api/books/:id/fanfic/refresh", async (c) => {
+  app.post("/api/v1/books/:id/fanfic/refresh", async (c) => {
     const id = c.req.param("id");
     const { sourceText, sourceName } = await c.req.json<{ sourceText: string; sourceName?: string }>();
     if (!sourceText?.trim()) return c.json({ error: "sourceText is required" }, 400);
@@ -1281,7 +1749,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Radar Scan ---
 
-  app.post("/api/radar/scan", async (c) => {
+  app.post("/api/v1/radar/scan", async (c) => {
     broadcast("radar:start", {});
     try {
       const pipeline = new PipelineRunner(await buildPipelineConfig());
@@ -1296,7 +1764,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Doctor (environment health check) ---
 
-  app.get("/api/doctor", async (c) => {
+  app.get("/api/v1/doctor", async (c) => {
     const { existsSync } = await import("node:fs");
     const { GLOBAL_ENV_PATH } = await import("@actalk/inkos-core");
 
@@ -1372,7 +1840,7 @@ export async function startStudioServer(
     if (existsSync(indexPath)) {
       const indexHtml = await readFileFs(indexPath, "utf-8");
       app.get("*", (c) => {
-        if (c.req.path.startsWith("/api/")) return c.notFound();
+        if (c.req.path.startsWith("/api/v1/")) return c.notFound();
         return c.html(indexHtml);
       });
     }

@@ -393,6 +393,7 @@ export class PipelineRunner {
         : base?.apiKey ?? "";
       client = createLLMClient({
         provider,
+        service: base?.service ?? "custom",
         baseUrl: override.baseUrl,
         apiKey,
         model: override.model,
@@ -693,7 +694,11 @@ export class PipelineRunner {
         lengthTelemetry,
         ...(draftOutput.tokenUsage ? { tokenUsage: draftOutput.tokenUsage } : {}),
       };
-      await this.state.saveChapterIndex(bookId, [...existingIndex, newEntry]);
+      const existingIdx = existingIndex.findIndex((e) => e.number === chapterNumber);
+      const updatedIndex = existingIdx >= 0
+        ? existingIndex.map((e, i) => i === existingIdx ? newEntry : e)
+        : [...existingIndex, newEntry];
+      await this.state.saveChapterIndex(bookId, updatedIndex);
       await this.markBookActiveIfNeeded(bookId);
 
       // Snapshot
@@ -1808,7 +1813,7 @@ export class PipelineRunner {
         role: "user",
         content: `分析以下参考文本的写作风格：\n\n${referenceText.slice(0, 20000)}`,
       },
-    ], { temperature: 0.3, maxTokens: 4096 });
+    ], { temperature: 0.3 });
 
     await writeFile(join(storyDir, "style_guide.md"), response.content, "utf-8");
     return response.content;
@@ -1930,7 +1935,7 @@ ${emotions}
 ## 正传角色矩阵
 ${matrix}`,
       },
-    ], { temperature: 0.3, maxTokens: 16384 });
+    ], { temperature: 0.3 });
 
     // Append deterministic meta block (LLM may hallucinate timestamps)
     const metaBlock = [

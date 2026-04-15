@@ -279,7 +279,7 @@ ${finalRequirementsPrompt}`;
     const response = await this.chat([
       { role: "system", content: langPrefix + systemPrompt },
       { role: "user", content: userMessage },
-    ], { maxTokens: 16384, temperature: 0.8 });
+    ], { temperature: 0.8 });
 
     return this.parseSections(response.content);
   }
@@ -332,8 +332,8 @@ ${finalRequirementsPrompt}`;
       writeFile(
         join(storyDir, "character_matrix.md"),
         language === "en"
-          ? "# Character Matrix\n\n### Character Profiles\n| Character | Core Tags | Contrast Detail | Speech Style | Personality Core | Relationship to Protagonist | Core Motivation | Current Goal |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n\n### Encounter Log\n| Character A | Character B | First Meeting Chapter | Latest Interaction Chapter | Relationship Type | Relationship Change |\n| --- | --- | --- | --- | --- | --- |\n\n### Information Boundaries\n| Character | Known Information | Unknown Information | Source Chapter |\n| --- | --- | --- | --- |\n"
-          : "# 角色交互矩阵\n\n### 角色档案\n| 角色 | 核心标签 | 反差细节 | 说话风格 | 性格底色 | 与主角关系 | 核心动机 | 当前目标 |\n|------|----------|----------|----------|----------|------------|----------|----------|\n\n### 相遇记录\n| 角色A | 角色B | 首次相遇章 | 最近交互章 | 关系性质 | 关系变化 |\n|-------|-------|------------|------------|----------|----------|\n\n### 信息边界\n| 角色 | 已知信息 | 未知信息 | 信息来源章 |\n|------|----------|----------|------------|\n",
+          ? "# Character Matrix\n\n<!-- One ## section per character. Add new characters as new ## blocks. -->\n"
+          : "# 角色矩阵\n\n<!-- 每个角色一个 ## 块，新角色追加新 ## 即可。 -->\n",
         "utf-8",
       ),
     );
@@ -676,7 +676,7 @@ ${keyPrinciplesPrompt}`;
         role: "user",
         content: userMessage,
       },
-    ], { maxTokens: 16384, temperature: 0.5 });
+    ], { temperature: 0.5 });
 
     return this.parseSections(response.content);
   }
@@ -765,7 +765,7 @@ prohibitions:
         role: "user",
         content: `请为标题为"${book.title}"的${fanficMode}模式同人小说生成基础设定。目标${book.targetChapters}章，每章${book.chapterWordCount}字。`,
       },
-    ], { maxTokens: 16384, temperature: 0.7 });
+    ], { temperature: 0.7 });
 
     return this.parseSections(response.content);
   }

@@ -105,13 +105,9 @@ export function InkTuiDashboard(props: InkTuiDashboardProps): React.JSX.Element 
         )}
       </Box>
 
-      {/* Status strip */}
+      {/* Composer area */}
       <Box flexDirection="column" marginTop={1}>
         <Text color={WARM_BORDER}>{thinRule}</Text>
-        <Box marginTop={1}>
-          <ExecutionBadge status={model.executionStatus} color={activeAccent} />
-          <Text color={activeAccent}> {model.statusPrimaryLine}</Text>
-        </Box>
 
         {/* Composer input */}
         <Box
@@ -158,6 +154,10 @@ export function InkTuiDashboard(props: InkTuiDashboardProps): React.JSX.Element 
               })}
             </Box>
           ) : null}
+        </Box>
+        <Box marginTop={1}>
+          <ExecutionBadge status={model.executionStatus} color={activeAccent} />
+          <Text color={activeAccent}> {model.statusPrimaryLine}</Text>
         </Box>
       </Box>
     </Box>
@@ -358,7 +358,8 @@ export function InkTuiApp(props: InkTuiAppProps): React.JSX.Element {
         hasFailed: session.currentExecution?.status === "failed",
       });
       const userTimestamp = Date.now();
-      const assistantDraftTimestamp = routed.intent === "chat" ? userTimestamp + 1 : null;
+      const assistantDraftTimestamp = (routed.intent === "chat" || routed.intent === "develop_book")
+        ? userTimestamp + 1 : null;
       assistantDraftTimestampRef.current = assistantDraftTimestamp;
       setActivityIntent(routed.intent);
       setIsSubmitting(true);
@@ -367,6 +368,10 @@ export function InkTuiApp(props: InkTuiAppProps): React.JSX.Element {
       setScrollOffset(0);
       setHistoryState({ cursor: null, draft: "" });
       setSession((current) => createOptimisticUserMessageSession(current, input, userTimestamp));
+
+      if (routed.intent === "develop_book" && !session.creationDraft) {
+        appendSystemNote(copy.notes.newBookGuide);
+      }
 
       const result = await processProjectInteractionInput({
         projectRoot: props.projectRoot,

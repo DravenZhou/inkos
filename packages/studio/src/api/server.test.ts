@@ -22,6 +22,15 @@ const processProjectInteractionRequestMock = vi.fn();
 const createInteractionToolsFromDepsMock = vi.fn(() => ({}));
 const loadProjectSessionMock = vi.fn();
 const resolveSessionActiveBookMock = vi.fn();
+const runAgentSessionMock = vi.fn();
+const findOrCreateBookSessionMock = vi.fn();
+const loadBookSessionMock = vi.fn();
+const persistBookSessionMock = vi.fn();
+const appendBookSessionMessageMock = vi.fn();
+const resolveServiceModelMock = vi.fn();
+const loadSecretsMock = vi.fn();
+const saveSecretsMock = vi.fn();
+const getServiceApiKeyMock = vi.fn();
 
 const logger = {
   child: () => logger,
@@ -112,6 +121,15 @@ vi.mock("@actalk/inkos-core", () => {
     createInteractionToolsFromDeps: createInteractionToolsFromDepsMock,
     loadProjectSession: loadProjectSessionMock,
     resolveSessionActiveBook: resolveSessionActiveBookMock,
+    runAgentSession: runAgentSessionMock,
+    findOrCreateBookSession: findOrCreateBookSessionMock,
+    loadBookSession: loadBookSessionMock,
+    persistBookSession: persistBookSessionMock,
+    appendBookSessionMessage: appendBookSessionMessageMock,
+    resolveServiceModel: resolveServiceModelMock,
+    loadSecrets: loadSecretsMock,
+    saveSecrets: saveSecretsMock,
+    getServiceApiKey: getServiceApiKeyMock,
     GLOBAL_ENV_PATH: join(tmpdir(), "inkos-global.env"),
   };
 });
@@ -262,6 +280,36 @@ describe("createStudioServer daemon lifecycle", () => {
     saveChapterIndexMock.mockResolvedValue(undefined);
     rollbackToChapterMock.mockResolvedValue([]);
     pipelineConfigs.length = 0;
+    runAgentSessionMock.mockReset();
+    findOrCreateBookSessionMock.mockReset();
+    loadBookSessionMock.mockReset();
+    persistBookSessionMock.mockReset();
+    appendBookSessionMessageMock.mockReset();
+    resolveServiceModelMock.mockReset();
+    loadSecretsMock.mockReset();
+    saveSecretsMock.mockReset();
+    getServiceApiKeyMock.mockReset();
+    // Default BookSession for agent tests
+    const defaultBookSession = {
+      sessionId: "agent-session-1",
+      projectRoot: root,
+      activeBookId: "demo-book",
+      messages: [],
+      events: [],
+    };
+    findOrCreateBookSessionMock.mockResolvedValue(defaultBookSession);
+    loadBookSessionMock.mockResolvedValue(null);
+    persistBookSessionMock.mockResolvedValue(undefined);
+    appendBookSessionMessageMock.mockImplementation(
+      (session: unknown, _msg: unknown) => session,
+    );
+    runAgentSessionMock.mockResolvedValue({
+      responseText: "Agent response.",
+      messages: [],
+    });
+    loadSecretsMock.mockResolvedValue({ services: {} });
+    saveSecretsMock.mockResolvedValue(undefined);
+    getServiceApiKeyMock.mockResolvedValue(undefined);
   });
 
   afterEach(async () => {
@@ -281,7 +329,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
     const responseOrTimeout = await Promise.race([
-      app.request("http://localhost/api/daemon/start", { method: "POST" }),
+      app.request("http://localhost/api/v1/daemon/start", { method: "POST" }),
       new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 30)),
     ]);
 
@@ -291,7 +339,7 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true, running: true });
 
-    const status = await app.request("http://localhost/api/daemon");
+    const status = await app.request("http://localhost/api/v1/daemon");
     await expect(status.json()).resolves.toEqual({ running: true });
 
     resolveStart?.();
@@ -301,7 +349,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const response = await app.request("http://localhost/api/books/..%2Fetc%2Fpasswd", {
+    const response = await app.request("http://localhost/api/v1/books/..%2Fetc%2Fpasswd", {
       method: "GET",
     });
 
@@ -326,14 +374,14 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const readAuthorIntent = await app.request("http://localhost/api/books/demo-book/truth/author_intent.md");
+    const readAuthorIntent = await app.request("http://localhost/api/v1/books/demo-book/truth/author_intent.md");
     expect(readAuthorIntent.status).toBe(200);
     await expect(readAuthorIntent.json()).resolves.toMatchObject({
       file: "author_intent.md",
       content: "# Author Intent\n\nStay cold.\n",
     });
 
-    const updateCurrentFocus = await app.request("http://localhost/api/books/demo-book/truth/current_focus.md", {
+    const updateCurrentFocus = await app.request("http://localhost/api/v1/books/demo-book/truth/current_focus.md", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: "# Current Focus\n\nPull focus back to the harbor trail.\n" }),
@@ -349,7 +397,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const save = await app.request("http://localhost/api/project", {
+    const save = await app.request("http://localhost/api/v1/project", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -362,7 +410,7 @@ describe("createStudioServer daemon lifecycle", () => {
 
     expect(save.status).toBe(200);
 
-    const project = await app.request("http://localhost/api/project");
+    const project = await app.request("http://localhost/api/v1/project");
     await expect(project.json()).resolves.toMatchObject({
       language: "en",
       temperature: 0.2,
@@ -394,7 +442,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(startupConfig as never, root);
 
-    const response = await app.request("http://localhost/api/doctor");
+    const response = await app.request("http://localhost/api/v1/doctor");
 
     expect(response.status).toBe(200);
     expect(createLLMClientMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -432,7 +480,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(startupConfig as never, root);
 
-    const response = await app.request("http://localhost/api/radar/scan", {
+    const response = await app.request("http://localhost/api/v1/radar/scan", {
       method: "POST",
     });
 
@@ -451,7 +499,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const save = await app.request("http://localhost/api/project/language", {
+    const save = await app.request("http://localhost/api/v1/project/language", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ language: "en" }),
@@ -459,7 +507,7 @@ describe("createStudioServer daemon lifecycle", () => {
 
     expect(save.status).toBe(200);
 
-    const project = await app.request("http://localhost/api/project");
+    const project = await app.request("http://localhost/api/v1/project");
     await expect(project.json()).resolves.toMatchObject({
       language: "en",
       languageExplicit: true,
@@ -474,7 +522,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const response = await app.request("http://localhost/api/books/create", {
+    const response = await app.request("http://localhost/api/v1/books/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -499,7 +547,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const response = await app.request("http://localhost/api/books/create", {
+    const response = await app.request("http://localhost/api/v1/books/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -513,7 +561,7 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(response.status).toBe(200);
     await Promise.resolve();
 
-    const status = await app.request("http://localhost/api/books/broken-book/create-status");
+    const status = await app.request("http://localhost/api/v1/books/broken-book/create-status");
     expect(status.status).toBe(200);
     await expect(status.json()).resolves.toMatchObject({
       status: "error",
@@ -549,7 +597,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const response = await app.request("http://localhost/api/books/demo-book/chapters/3/reject", {
+    const response = await app.request("http://localhost/api/v1/books/demo-book/chapters/3/reject", {
       method: "POST",
     });
 
@@ -569,7 +617,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const response = await app.request("http://localhost/api/books/create", {
+    const response = await app.request("http://localhost/api/v1/books/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -602,7 +650,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const response = await app.request("http://localhost/api/books/demo-book/revise/3", {
+    const response = await app.request("http://localhost/api/v1/books/demo-book/revise/3", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "rewrite", brief: "把注意力拉回师债主线。" }),
@@ -617,7 +665,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const response = await app.request("http://localhost/api/books/demo-book/resync/3", {
+    const response = await app.request("http://localhost/api/v1/books/demo-book/resync/3", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ brief: "以师债线为准同步状态。" }),
@@ -632,7 +680,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const response = await app.request("http://localhost/api/books/demo-book/export-save", {
+    const response = await app.request("http://localhost/api/v1/books/demo-book/export-save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ format: "md", approvedOnly: true }),
@@ -655,26 +703,19 @@ describe("createStudioServer daemon lifecycle", () => {
     });
   });
 
-  it("routes /api/agent through the shared interaction control layer", async () => {
-    processProjectInteractionInputMock.mockResolvedValue({
-      request: { intent: "write_next", bookId: "demo-book" },
+  it("routes /api/agent through runAgentSession and returns response + sessionId", async () => {
+    runAgentSessionMock.mockResolvedValueOnce({
       responseText: "Completed write_next for demo-book.",
-      session: {
-        sessionId: "session-1",
-        projectRoot: root,
-        activeBookId: "demo-book",
-        automationMode: "semi",
-        messages: [
-          { role: "user", content: "continue", timestamp: 1 },
-          { role: "assistant", content: "Completed write_next for demo-book.", timestamp: 2 },
-        ],
-      },
+      messages: [
+        { role: "user", content: "continue" },
+        { role: "assistant", content: "Completed write_next for demo-book." },
+      ],
     });
 
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const response = await app.request("http://localhost/api/agent", {
+    const response = await app.request("http://localhost/api/v1/agent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ instruction: "continue", activeBookId: "demo-book" }),
@@ -683,26 +724,27 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       response: "Completed write_next for demo-book.",
-      request: { intent: "write_next", bookId: "demo-book" },
       session: expect.objectContaining({
-        activeBookId: "demo-book",
+        sessionId: "agent-session-1",
       }),
     });
-    expect(createInteractionToolsFromDepsMock).toHaveBeenCalledTimes(1);
-    expect(processProjectInteractionInputMock).toHaveBeenCalledWith(expect.objectContaining({
-      projectRoot: root,
-      input: "continue",
-      activeBookId: "demo-book",
-    }));
+    expect(runAgentSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookId: "demo-book",
+        projectRoot: root,
+      }),
+      "continue",
+      expect.any(Array),
+    );
   });
 
-  it("returns 500 with an error payload when the shared agent execution fails", async () => {
-    processProjectInteractionInputMock.mockRejectedValueOnce(new Error("boom"));
+  it("returns 500 with an error payload when the agent session fails", async () => {
+    runAgentSessionMock.mockRejectedValueOnce(new Error("boom"));
 
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const response = await app.request("http://localhost/api/agent", {
+    const response = await app.request("http://localhost/api/v1/agent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ instruction: "continue", activeBookId: "demo-book" }),
@@ -711,7 +753,7 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toEqual({
       error: {
-        code: "INTERACTION_ERROR",
+        code: "AGENT_ERROR",
         message: "boom",
       },
     });
@@ -732,7 +774,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const response = await app.request("http://localhost/api/interaction/session");
+    const response = await app.request("http://localhost/api/v1/interaction/session");
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -763,7 +805,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const response = await app.request("http://localhost/api/interaction/session");
+    const response = await app.request("http://localhost/api/v1/interaction/session");
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({

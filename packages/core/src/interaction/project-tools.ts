@@ -9,8 +9,9 @@ import type {
   LLMClient,
   BookConfig,
   Platform,
+  ToolDefinition,
 } from "../index.js";
-import { chatCompletion } from "../index.js";
+import { chatCompletion, chatWithTools } from "../index.js";
 import { executeEditTransaction } from "./edit-controller.js";
 import type { InteractionRuntimeTools } from "./runtime.js";
 import type { BookCreationDraft } from "./session.js";
@@ -42,84 +43,6 @@ function normalizePlatform(platform?: string): Platform {
       return platform;
     default:
       return "other";
-  }
-}
-
-function extractBalancedJsonObject(text: string): string | null {
-  const start = text.indexOf("{");
-  if (start < 0) {
-    return null;
-  }
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let index = start; index < text.length; index += 1) {
-    const char = text[index]!;
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === "\"") {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === "\"") {
-      inString = true;
-      continue;
-    }
-
-    if (char === "{") {
-      depth += 1;
-      continue;
-    }
-
-    if (char === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        return text.slice(start, index + 1);
-      }
-      if (depth < 0) {
-        return null;
-      }
-    }
-  }
-
-  return null;
-}
-
-function parseCreationDraftResult(text: string): {
-  readonly assistantReply: string;
-  readonly draft: BookCreationDraft;
-} | null {
-  const candidate = extractBalancedJsonObject(text);
-  if (!candidate) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(candidate) as {
-      assistantReply?: string;
-      draft?: BookCreationDraft;
-    };
-    if (!parsed.assistantReply || !parsed.draft) {
-      return null;
-    }
-    return {
-      assistantReply: parsed.assistantReply,
-      draft: parsed.draft,
-    };
-  } catch {
-    return null;
   }
 }
 
@@ -437,11 +360,142 @@ async function withPipelineInteractionTelemetry<T extends { chapterNumber?: numb
   }
 }
 
+const CREATE_BOOK_TOOL: ToolDefinition = {
+  name: "create_book",
+  description: "根据用户描述生成建书参数。系统会将参数渲染为可编辑表单，用户确认后建书。",
+  parameters: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "书名" },
+      genre: { type: "string", description: "题材标识，如 xuanhuan, urban, romance, scifi, mystery" },
+      platform: { type: "string", enum: ["tomato", "qidian", "feilu", "other"], description: "发布平台" },
+      targetChapters: { type: "number", description: "目标章数，默认 200" },
+      chapterWordCount: { type: "number", description: "每章字数，默认 3000" },
+      language: { type: "string", enum: ["zh", "en"], description: "写作语言，默认 zh" },
+      brief: { type: "string", description: "创意简述，会传给 Architect 智能体生成完整的世界观、主角、冲突等 foundation 文件。把用户提到的所有创意要素都写进这里。" },
+    },
+    required: ["title", "genre", "platform", "brief"],
+  },
+};
+
+const BOOK_DRAFT_SYSTEM_PROMPT = [
+  "你是 InkOS 的建书助手。用户会描述想写的书，你需要调用 create_book 工具来生成建书参数。",
+  "",
+  "规则：",
+  "1. 从用户描述中推断所有字段，大胆预填合理默认值。",
+  "2. brief 字段要详细——它会传给 Architect 智能体生成完整的世界观、主角、冲突等 foundation 文件。把用户提到的所有创意要素都写进 brief。",
+  "3. 如果用户后续要求修改某些字段，重新调用 create_book 工具，只更新被提到的字段，其余保持不变。",
+  "4. 不要只回复文字讨论——必须调用 create_book 工具输出结构化参数。",
+].join("\n");
+
+/** Map directive field keys to BookCreationDraft property names. */
+function applyFieldsToDraft(
+  existing: BookCreationDraft | undefined,
+  fields: Readonly<Record<string, string>>,
+  concept: string,
+): BookCreationDraft {
+  const draft: BookCreationDraft = {
+    concept,
+    missingFields: [],
+    readyToCreate: false,
+    ...(existing ?? {}),
+  };
+
+  for (const [key, value] of Object.entries(fields)) {
+    if (!value) continue;
+
+    switch (key) {
+      case "title":
+        draft.title = value;
+        break;
+      case "genre":
+        draft.genre = value;
+        break;
+      case "platform":
+        draft.platform = value;
+        break;
+      case "language":
+        if (value === "zh" || value === "en") draft.language = value;
+        break;
+      case "targetChapters": {
+        const n = parseInt(value, 10);
+        if (!Number.isNaN(n) && n > 0) draft.targetChapters = n;
+        break;
+      }
+      case "chapterWordCount":
+      case "chapterLength": {
+        const n = parseInt(value, 10);
+        if (!Number.isNaN(n) && n > 0) draft.chapterWordCount = n;
+        break;
+      }
+      case "blurb":
+        draft.blurb = value;
+        break;
+      case "worldPremise":
+        draft.worldPremise = value;
+        break;
+      case "settingNotes":
+        draft.settingNotes = value;
+        break;
+      case "protagonist":
+        draft.protagonist = value;
+        break;
+      case "supportingCast":
+        draft.supportingCast = value;
+        break;
+      case "conflictCore":
+        draft.conflictCore = value;
+        break;
+      case "volumeOutline":
+        draft.volumeOutline = value;
+        break;
+      case "constraints":
+        draft.constraints = value;
+        break;
+      case "authorIntent":
+        draft.authorIntent = value;
+        break;
+      case "currentFocus":
+        draft.currentFocus = value;
+        break;
+      // Unknown keys are silently ignored — the LLM may emit
+      // application-level keys we don't map to the draft struct.
+    }
+  }
+
+  return draft;
+}
+
+function formatDraftForUserMessage(
+  existingDraft: BookCreationDraft | undefined,
+  userMessage: string,
+): string {
+  const parts: string[] = [];
+
+  if (existingDraft) {
+    parts.push("## 当前草案状态");
+    const entries = Object.entries(existingDraft).filter(
+      ([, v]) => v !== undefined && v !== "" && !(Array.isArray(v) && v.length === 0),
+    );
+    for (const [key, value] of entries) {
+      parts.push(`- **${key}**: ${typeof value === "object" ? JSON.stringify(value) : String(value)}`);
+    }
+    parts.push("");
+  }
+
+  parts.push("## 用户输入");
+  parts.push(userMessage);
+
+  return parts.join("\n");
+}
+
 export function createInteractionToolsFromDeps(
   pipeline: PipelineLike,
   state: StateLike,
   hooks?: {
     readonly onChatTextDelta?: (text: string) => void;
+    readonly onDraftTextDelta?: (text: string) => void;
+    readonly onDraftRawDelta?: (text: string) => void;
     readonly getChatRequestOptions?: () => {
       readonly temperature?: number;
       readonly maxTokens?: number;
@@ -453,70 +507,71 @@ export function createInteractionToolsFromDeps(
   return {
     listBooks: () => state.listBooks(),
     developBookDraft: async (input, existingDraft) => {
+      const concept = existingDraft?.concept ?? input;
+
       if (!instrumentedPipeline.config?.client || !instrumentedPipeline.config?.model) {
-        const concept = existingDraft?.concept ?? input;
+        // Fallback: no LLM configured
         return {
           __interaction: {
-            responseText: "先把这本书的大概方向收住。你更想写长篇连载，还是十来章能收住的版本？",
+            responseText: "请先配置 LLM 模型，然后再创建书籍。",
             details: {
               creationDraft: {
                 concept,
-                title: existingDraft?.title,
-                genre: existingDraft?.genre,
-                platform: existingDraft?.platform,
-                language: existingDraft?.language,
-                targetChapters: existingDraft?.targetChapters,
-                chapterWordCount: existingDraft?.chapterWordCount,
-                blurb: existingDraft?.blurb,
-                authorIntent: existingDraft?.authorIntent,
-                currentFocus: existingDraft?.currentFocus,
-                nextQuestion: "你更想写长篇连载，还是十来章能收住的版本？",
-                missingFields: existingDraft?.missingFields ?? ["title", "genre", "targetChapters"],
-                readyToCreate: existingDraft?.readyToCreate ?? false,
-              } satisfies BookCreationDraft,
+                missingFields: ["title", "genre", "targetChapters"],
+                readyToCreate: false,
+              },
             },
           },
         };
       }
 
-      const response = await chatCompletion(
+      // Build messages - include existing draft context if present
+      const userContent = existingDraft
+        ? `当前草案参数：${JSON.stringify(existingDraft, null, 2)}\n\n用户输入：${input}`
+        : input;
+
+      const result = await chatWithTools(
         instrumentedPipeline.config.client,
         instrumentedPipeline.config.model,
         [
-          {
-            role: "system",
-            content: [
-              "You are InkOS book ideation assistant.",
-              "Turn the user's latest message and the current draft into a tighter book creation draft.",
-              "Ask at most one sharp next question.",
-              "Default to concise Chinese unless the draft language is clearly English.",
-              "Return JSON only with keys assistantReply and draft.",
-              "draft must include concept and may include title, genre, platform, language, targetChapters, chapterWordCount, blurb, worldPremise, settingNotes, protagonist, supportingCast, conflictCore, volumeOutline, constraints, authorIntent, currentFocus, nextQuestion, missingFields, readyToCreate.",
-              "Help the user decide and revise worldview, setting, protagonist, supporting cast, core conflict, blurb, and volume direction.",
-              "Be conservative: only mark readyToCreate=true when the draft already has a workable title, genre, targetChapters, chapterWordCount, and enough setting/conflict detail to generate a foundation.",
-            ].join(" "),
-          },
-          {
-            role: "user",
-            content: JSON.stringify({
-              currentDraft: existingDraft ?? null,
-              latestMessage: input,
-            }, null, 2),
-          },
+          { role: "system", content: BOOK_DRAFT_SYSTEM_PROMPT },
+          { role: "user", content: userContent },
         ],
+        [CREATE_BOOK_TOOL],
         { temperature: 0.4 },
       );
 
-      const parsed = parseCreationDraftResult(response.content);
-      if (!parsed) {
-        throw new Error("Book draft assistant returned invalid JSON.");
+      // Extract tool call if present
+      const toolCall = result.toolCalls[0];
+      let parsedArgs: Record<string, unknown> = {};
+      if (toolCall) {
+        try {
+          parsedArgs = JSON.parse(toolCall.arguments);
+        } catch {
+          // If parsing fails, use empty args
+        }
       }
+
+      // Build a draft from tool call arguments
+      const draft: BookCreationDraft = {
+        concept,
+        title: (parsedArgs.title as string) ?? existingDraft?.title,
+        genre: (parsedArgs.genre as string) ?? existingDraft?.genre,
+        platform: (parsedArgs.platform as string) ?? existingDraft?.platform,
+        language: (parsedArgs.language as "zh" | "en") ?? existingDraft?.language,
+        targetChapters: (parsedArgs.targetChapters as number) ?? existingDraft?.targetChapters,
+        chapterWordCount: (parsedArgs.chapterWordCount as number) ?? existingDraft?.chapterWordCount,
+        blurb: (parsedArgs.brief as string) ?? existingDraft?.blurb,
+        missingFields: [],
+        readyToCreate: Boolean(parsedArgs.title && parsedArgs.genre && parsedArgs.platform),
+      };
 
       return {
         __interaction: {
-          responseText: parsed.assistantReply,
+          responseText: result.content || "已生成建书参数，请确认或修改。",
           details: {
-            creationDraft: parsed.draft,
+            creationDraft: draft,
+            toolCall: toolCall ? { name: toolCall.name, arguments: parsedArgs } : undefined,
           },
         },
       };
