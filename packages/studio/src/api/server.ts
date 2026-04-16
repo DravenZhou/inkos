@@ -444,8 +444,11 @@ async function probeServiceCapabilities(args: {
   }
 
   const discoveredModels = modelsResponse.models;
+  // For services with knownModels, use their first model as top candidate — not the global default
+  const preset = resolveServicePreset(baseService);
+  const serviceFirstModel = preset?.knownModels?.[0];
   const modelCandidates = buildModelCandidates({
-    preferredModel: args.preferredModel,
+    preferredModel: args.preferredModel ?? serviceFirstModel,
     configModel: typeof llm.defaultModel === "string" ? llm.defaultModel : typeof llm.model === "string" ? llm.model : undefined,
     envModel,
     discoveredModels,
