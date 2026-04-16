@@ -478,7 +478,7 @@ async function probeServiceCapabilities(args: {
       } as ProjectConfig["llm"]);
 
       try {
-        await chatCompletion(client, model, [{ role: "user", content: "ping" }], { maxTokens: 5 });
+        await chatCompletion(client, model, [{ role: "user", content: "hi" }], { maxTokens: 248 });
         const models = discoveredModels.length > 0
           ? discoveredModels
           : [{ id: model, name: model }];
