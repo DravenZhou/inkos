@@ -17,6 +17,7 @@ export function buildAgentSystemPrompt(bookId: string | null, language: string):
 
 2. **确认建书**（调用阶段）— 当信息足够时，调用 sub_agent 工具委托 architect 子智能体建书：
    - instruction 中包含收集到的所有信息（题材、世界观、主角、冲突等）
+   - 同时传入结构化参数：title（书名）、genre（题材）、platform（平台）、language（语言）、targetChapters（章数）、chapterWordCount（每章字数）
    - architect 会生成完整的 foundation（世界观设定、卷纲规划、叙事规则等）
 
 ## 对话风格
@@ -46,6 +47,7 @@ export function buildAgentSystemPrompt(bookId: string | null, language: string):
 
 2. **Create book** — When you have enough info, call the sub_agent tool with agent="architect":
    - Include all collected info in the instruction
+   - Pass structured params: title, genre, platform, language, targetChapters, chapterWordCount
    - The architect will generate the complete foundation
 
 ## Style
@@ -69,11 +71,11 @@ export function buildAgentSystemPrompt(bookId: string | null, language: string):
 ## 可用工具
 
 - **sub_agent** — 委托子智能体执行重操作：
-  - agent="writer" 写下一章
-  - agent="auditor" 审计章节质量（可指定 chapterNumber）
-  - agent="reviser" 修订章节（可指定 chapterNumber 和修订模式）
-  - agent="exporter" 导出书籍
-  - **chapterNumber 参数**：auditor 和 reviser 支持指定章节号，不指定则默认最新章节
+  - agent="architect" 从零建书（参数：title, genre, platform, language, targetChapters, chapterWordCount）
+  - agent="writer" 写下一章（参数：chapterWordCount 覆盖字数）
+  - agent="auditor" 审计章节质量（参数：chapterNumber 指定章节）
+  - agent="reviser" 修订章节（参数：chapterNumber, mode: spot-fix/polish/rewrite/rework/anti-detect）
+  - agent="exporter" 导出书籍（参数：format: txt/md/epub, approvedOnly: true/false）
 - **read** — 读取书籍的设定文件或章节内容
 - **edit** — 编辑设定文件（如修改角色名、调整世界观）
 - **grep** — 搜索内容（如"哪一章提到了某个角色"）
@@ -110,11 +112,11 @@ export function buildAgentSystemPrompt(bookId: string | null, language: string):
 ## Available Tools
 
 - **sub_agent** — Delegate to sub-agents:
-  - agent="writer" for writing next chapter
-  - agent="auditor" for chapter quality audit (supports chapterNumber)
-  - agent="reviser" for chapter revision (supports chapterNumber + mode via instruction)
-  - agent="exporter" for book export
-  - **chapterNumber param**: auditor and reviser accept an explicit chapter number; omit for latest
+  - agent="architect" create new book (params: title, genre, platform, language, targetChapters, chapterWordCount)
+  - agent="writer" write next chapter (params: chapterWordCount for word count override)
+  - agent="auditor" audit chapter quality (params: chapterNumber to target specific chapter)
+  - agent="reviser" revise chapter (params: chapterNumber, mode: spot-fix/polish/rewrite/rework/anti-detect)
+  - agent="exporter" export book (params: format: txt/md/epub, approvedOnly: true/false)
 - **read** — Read truth files or chapter content
 - **edit** — Edit truth files (rename characters, adjust world settings)
 - **grep** — Search content across chapters

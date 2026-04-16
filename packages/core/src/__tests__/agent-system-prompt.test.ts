@@ -75,10 +75,24 @@ describe("buildAgentSystemPrompt", () => {
       expect(prompt).toContain("Do NOT use emoji");
     });
 
-    it("with-book prompt does NOT list architect as available", () => {
+    it("with-book prompt documents architect but warns not to call it", () => {
       const prompt = buildAgentSystemPrompt("my-book", "zh");
-      // architect 不在可用工具列表里
-      expect(prompt).not.toMatch(/agent="architect"/);
+      // architect is documented in the tools list for completeness
+      expect(prompt).toMatch(/agent="architect"/);
+      // but the guidelines warn not to call it
+      expect(prompt).toContain("不要调用 architect");
+    });
+
+    it("book-mode prompt documents all sub_agent params", () => {
+      const prompt = buildAgentSystemPrompt("test-book", "zh");
+      expect(prompt).toContain("title");
+      expect(prompt).toContain("genre");
+      expect(prompt).toContain("platform");
+      expect(prompt).toContain("chapterWordCount");
+      expect(prompt).toContain("mode");
+      expect(prompt).toContain("anti-detect");
+      expect(prompt).toContain("format");
+      expect(prompt).toContain("approvedOnly");
     });
   });
 });
