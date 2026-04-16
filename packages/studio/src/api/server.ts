@@ -383,7 +383,7 @@ async function fetchModelsFromServiceBaseUrl(
   serviceId: string,
   baseUrl: string,
   apiKey: string,
-): Promise<{ models: Array<{ id: string; name: string }>; error?: string }> {
+): Promise<{ models: Array<{ id: string; name: string }>; error?: string; authFailed?: boolean }> {
   const modelsBaseUrl = isCustomServiceId(serviceId)
     ? baseUrl
     : resolveServiceModelsBaseUrl(serviceId) ?? baseUrl;
@@ -395,7 +395,11 @@ async function fetchModelsFromServiceBaseUrl(
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      return { models: [], error: `服务商返回 ${res.status}: ${body.slice(0, 200)}` };
+      return {
+        models: [],
+        error: `服务商返回 ${res.status}: ${body.slice(0, 200)}`,
+        authFailed: res.status === 401 || res.status === 403,
+      };
     }
     const json = await res.json() as { data?: Array<{ id: string }> };
     return {
@@ -429,6 +433,16 @@ async function probeServiceCapabilities(args: {
 
   const baseService = isCustomServiceId(args.service) ? "custom" : args.service;
   const modelsResponse = await fetchModelsFromServiceBaseUrl(baseService, args.baseUrl, args.apiKey);
+
+  // /models returned 401/403 — key is definitively invalid, don't probe further
+  if (modelsResponse.authFailed) {
+    return {
+      ok: false,
+      models: [],
+      error: "API Key 无效，请检查后重试",
+    };
+  }
+
   const discoveredModels = modelsResponse.models;
   const modelCandidates = buildModelCandidates({
     preferredModel: args.preferredModel,
