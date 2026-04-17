@@ -56,6 +56,15 @@ export interface SessionMessage {
   readonly timestamp: number;
 }
 
+export interface SessionSummary {
+  readonly sessionId: string;
+  readonly bookId: string | null;
+  readonly title: string | null;
+  readonly messageCount: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
 export interface AgentResponse {
   readonly response?: string;
   readonly error?: string | { code?: string; message?: string };
@@ -64,6 +73,9 @@ export interface AgentResponse {
     readonly toolCall?: ToolCall;
   };
   readonly session?: {
+    readonly sessionId?: string;
+    readonly bookId?: string | null;
+    readonly title?: string | null;
     readonly activeBookId?: string;
     readonly creationDraft?: unknown;
     readonly messages?: ReadonlyArray<SessionMessage>;
@@ -74,6 +86,8 @@ export interface AgentResponse {
 export interface SessionResponse {
   readonly session?: {
     readonly sessionId?: string;
+    readonly bookId?: string | null;
+    readonly title?: string | null;
     readonly activeBookId?: string;
     readonly messages?: ReadonlyArray<SessionMessage>;
   };
@@ -88,19 +102,27 @@ export interface BookSummary {
   cast: string;
 }
 
+export interface SessionRuntime {
+  readonly sessionId: string;
+  readonly bookId: string | null;
+  readonly title: string | null;
+  readonly messages: ReadonlyArray<Message>;
+  readonly stream: EventSource | null;
+  readonly isStreaming: boolean;
+  readonly lastError: string | null;
+  readonly pendingBookArgs: Record<string, unknown> | null;
+}
+
 export interface MessageState {
-  messages: ReadonlyArray<Message>;
+  sessions: Record<string, SessionRuntime>;
+  sessionIdsByBook: Record<string, ReadonlyArray<string>>;
+  activeSessionId: string | null;
   input: string;
-  loading: boolean;
-  currentSessionId: string | null;
   selectedModel: string | null;
   selectedService: string | null;
-  /** Active EventSource ref — closed on session switch */
-  _activeStream: EventSource | null;
 }
 
 export interface CreateState {
-  pendingBookArgs: Record<string, unknown> | null;
   bookCreating: boolean;
   createProgress: string;
   bookDataVersion: number;
@@ -115,16 +137,20 @@ export type ChatState = MessageState & CreateState;
 // -- Action interfaces --
 
 export interface MessageActions {
+  activateSession: (sessionId: string | null) => void;
   setInput: (text: string) => void;
-  addUserMessage: (content: string) => void;
-  appendStreamChunk: (text: string, streamTs: number) => void;
-  finalizeStream: (streamTs: number, content: string, toolCall?: ToolCall) => void;
-  replaceStreamWithError: (streamTs: number, errorMsg: string) => void;
-  addErrorMessage: (errorMsg: string) => void;
-  setLoading: (loading: boolean) => void;
-  loadSessionMessages: (msgs: ReadonlyArray<SessionMessage>) => void;
-  loadSession: (bookId?: string) => Promise<void>;
-  sendMessage: (text: string, activeBookId?: string) => Promise<void>;
+  addUserMessage: (sessionId: string, content: string) => void;
+  appendStreamChunk: (sessionId: string, text: string, streamTs: number) => void;
+  finalizeStream: (sessionId: string, streamTs: number, content: string, toolCall?: ToolCall) => void;
+  replaceStreamWithError: (sessionId: string, streamTs: number, errorMsg: string) => void;
+  addErrorMessage: (sessionId: string, errorMsg: string) => void;
+  loadSessionMessages: (sessionId: string, msgs: ReadonlyArray<SessionMessage>) => void;
+  loadSessionList: (bookId: string | null) => Promise<void>;
+  createSession: (bookId: string | null) => Promise<string>;
+  renameSession: (sessionId: string, title: string) => Promise<void>;
+  deleteSession: (sessionId: string) => Promise<void>;
+  loadSessionDetail: (sessionId: string) => Promise<void>;
+  sendMessage: (sessionId: string, text: string, activeBookId?: string) => Promise<void>;
   setSelectedModel: (model: string, service: string) => void;
 }
 
@@ -132,7 +158,7 @@ export interface CreateActions {
   setPendingBookArgs: (args: Record<string, unknown> | null) => void;
   setBookCreating: (creating: boolean) => void;
   setCreateProgress: (progress: string) => void;
-  handleCreateBook: (activeBookId?: string) => Promise<string | null>;
+  handleCreateBook: (sessionId: string, activeBookId?: string) => Promise<string | null>;
   bumpBookDataVersion: () => void;
   openArtifact: (file: string) => void;
   openChapterArtifact: (chapterNum: number) => void;

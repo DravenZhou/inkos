@@ -5,18 +5,18 @@ import { bookKey } from "../message/runtime";
 
 export const createCreateSlice: StateCreator<ChatStore, [], [], CreateActions> = (set, get) => ({
   setPendingBookArgs: (args) =>
-    set((state) => ({
-      pendingBookArgs: args,
-      sessions: state.activeSessionId
-        ? {
-            ...state.sessions,
-            [state.activeSessionId]: {
-              ...state.sessions[state.activeSessionId],
-              pendingBookArgs: args,
-            },
-          }
-        : state.sessions,
-    })),
+    set((state) => {
+      if (!state.activeSessionId) return {};
+      return {
+        sessions: {
+          ...state.sessions,
+          [state.activeSessionId]: {
+            ...state.sessions[state.activeSessionId],
+            pendingBookArgs: args,
+          },
+        },
+      };
+    }),
   setBookCreating: (creating) => set({ bookCreating: creating }),
   setCreateProgress: (progress) => set({ createProgress: progress }),
 
@@ -28,8 +28,7 @@ export const createCreateSlice: StateCreator<ChatStore, [], [], CreateActions> =
 
   handleCreateBook: async (sessionId, activeBookId) => {
     const session = get().sessions[sessionId];
-    const pendingArgs = session?.pendingBookArgs ?? get().pendingBookArgs;
-    if (!pendingArgs) return null;
+    if (!session?.pendingBookArgs) return null;
 
     set({ bookCreating: true });
     try {
@@ -67,18 +66,18 @@ export const createCreateSlice: StateCreator<ChatStore, [], [], CreateActions> =
         });
         get().bumpBookDataVersion();
       }
-      set((state) => ({
-        pendingBookArgs: null,
-        sessions: state.sessions[sessionId]
-          ? {
-              ...state.sessions,
-              [sessionId]: {
-                ...state.sessions[sessionId],
-                pendingBookArgs: null,
-              },
-            }
-          : state.sessions,
-      }));
+      set((state) => {
+        if (!state.sessions[sessionId]) return {};
+        return {
+          sessions: {
+            ...state.sessions,
+            [sessionId]: {
+              ...state.sessions[sessionId],
+              pendingBookArgs: null,
+            },
+          },
+        };
+      });
       return newBookId;
     } catch (e) {
       get().addErrorMessage(sessionId, e instanceof Error ? e.message : String(e));
