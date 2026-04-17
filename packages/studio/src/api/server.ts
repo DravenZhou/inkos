@@ -19,7 +19,6 @@ import {
   appendBookSessionMessage,
   createAndPersistBookSession,
   renameBookSession,
-  updateSessionTitle,
   deleteBookSession,
   migrateBookSession,
   SessionAlreadyMigratedError,
@@ -103,15 +102,6 @@ function extractToolError(result: unknown): string {
   return String(result).slice(0, 500);
 }
 
-function normalizeGeneratedSessionTitle(raw: string): string | null {
-  const compact = raw
-    .replace(/[\r\n]+/g, " ")
-    .replace(/[“”"「」]/g, "")
-    .trim()
-    .slice(0, 20);
-  return compact.length > 0 ? compact : null;
-}
-
 interface CollectedToolExec {
   id: string;
   tool: string;
@@ -131,6 +121,9 @@ interface CollectedToolExec {
 type EventHandler = (event: string, data: unknown) => void;
 const subscribers = new Set<EventHandler>();
 const bookCreateStatus = new Map<string, { status: "creating" | "error"; error?: string }>();
+
+// 内存缓存：service -> 模型列表 + 更新时间戳；避免每次 sidebar 挂载时都打真实 LLM /models
+const modelListCache = new Map<string, { models: Array<{ id: string; name: string }>; at: number }>();
 
 interface ServiceConfigEntry {
   service: string;
@@ -1064,17 +1057,27 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   app.get("/api/v1/services/:service/models", async (c) => {
     const service = c.req.param("service");
+    const refresh = c.req.query("refresh") === "1";
     const apiKey = c.req.query("apiKey") || await getServiceApiKey(root, service);
 
     // No key = no models
     if (!apiKey) return c.json({ models: [] });
 
+    // Cache by service + apiKey fingerprint; valid for 10 min unless ?refresh=1
+    const cacheKey = `${service}::${apiKey.slice(-8)}`;
+    if (!refresh) {
+      const cached = modelListCache.get(cacheKey);
+      if (cached && Date.now() - cached.at < 10 * 60 * 1000) {
+        return c.json({ models: cached.models });
+      }
+    }
+
     // Fast path: services with knownModels return immediately
     const preset = resolveServicePreset(isCustomServiceId(service) ? "custom" : service);
     if (preset?.knownModels && preset.knownModels.length > 0) {
-      return c.json({
-        models: preset.knownModels.map((id) => ({ id, name: id })),
-      });
+      const models = preset.knownModels.map((id) => ({ id, name: id }));
+      modelListCache.set(cacheKey, { models, at: Date.now() });
+      return c.json({ models });
     }
 
     // Simple /models API call + fallback to pi-ai built-in list (no slow probe)
@@ -1098,6 +1101,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
       const builtIn = await listModelsForService(service, apiKey);
       models = builtIn.map((m) => ({ id: m.id, name: m.name }));
     }
+    modelListCache.set(cacheKey, { models, at: Date.now() });
     return c.json({ models });
   });
 
@@ -1276,9 +1280,12 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
   });
 
   app.post("/api/v1/sessions", async (c) => {
-    const body = await c.req.json<{ bookId?: string | null }>().catch(() => ({}));
+    const body = await c.req.json<{ bookId?: string | null; sessionId?: string }>().catch(() => ({}));
     const bookId = (body as { bookId?: string | null }).bookId ?? null;
-    const session = await createAndPersistBookSession(root, bookId);
+    const sessionId = (body as { sessionId?: string }).sessionId;
+    // sessionId 只允许 timestamp-random 格式；防止注入任意文件名
+    const safeSessionId = sessionId && /^[0-9]+-[a-z0-9]+$/.test(sessionId) ? sessionId : undefined;
+    const session = await createAndPersistBookSession(root, bookId, safeSessionId);
     return c.json({ session });
   });
 
@@ -1331,45 +1338,6 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
       }
       let bookSession = loadedBookSession;
       const streamSessionId = loadedBookSession.sessionId;
-      const scheduleSessionTitleGeneration = (resolvedSessionId: string) => {
-        void (async () => {
-          try {
-            const freshSession = await loadBookSession(root, resolvedSessionId);
-            if (!freshSession || freshSession.title !== null) return;
-
-            const firstUserMessage = freshSession.messages.find((message) => message.role === "user");
-            const firstAssistantMessage = freshSession.messages.find((message) => message.role === "assistant");
-            if (!firstUserMessage || !firstAssistantMessage) return;
-
-            const freshConfig = await loadCurrentProjectConfig({ requireApiKey: false });
-            const titleClient = createLLMClient(freshConfig.llm);
-            const titleResult = await chatCompletion(
-              titleClient,
-              freshConfig.llm.defaultModel ?? freshConfig.llm.model,
-              [
-                {
-                  role: "user",
-                  content:
-                    "用 6 个中文字以内概括这段对话的主题，只返回标题文本。\n\n"
-                    + `用户: ${firstUserMessage.content.slice(0, 200)}\n`
-                    + `助手: ${firstAssistantMessage.content.slice(0, 200)}`,
-                },
-              ],
-              { maxTokens: 32 },
-            );
-
-            const title = normalizeGeneratedSessionTitle(titleResult.content ?? "");
-            if (!title) return;
-
-            const updated = await updateSessionTitle(root, resolvedSessionId, title);
-            if (!updated || updated.title !== title) return;
-
-            broadcast("session:title", { sessionId: resolvedSessionId, title });
-          } catch {
-            // ignore title generation errors and try again after the next exchange
-          }
-        })();
-      };
 
       // Build initial message context from persisted session
       const initialMessages = bookSession.messages
@@ -1570,6 +1538,16 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
         content: instruction,
         timestamp: Date.now(),
       });
+      // 第一条用户消息就是 session 的标题：如果 title 还是 null，用消息内容（单行、≤20字）写入。
+      // 后续消息不覆盖；用户手动改名通过 renameBookSession 覆盖。
+      if (bookSession.title === null) {
+        const oneLine = instruction.trim().replace(/\s+/g, " ");
+        const title = oneLine.length > 20 ? `${oneLine.slice(0, 20)}…` : oneLine;
+        if (title) {
+          bookSession = { ...bookSession, title };
+          broadcast("session:title", { sessionId: bookSession.sessionId, title });
+        }
+      }
       if (result.responseText) {
         const lastAssistant = result.messages?.filter((m: any) => m.role === "assistant").pop();
         const thinking = lastAssistant?.thinking;
@@ -1608,7 +1586,6 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
               timestamp: Date.now() + 1,
             });
             await persistBookSession(root, bookSession);
-            scheduleSessionTitleGeneration(bookSession.sessionId);
             return c.json({
               response: fallback.content,
               session: { sessionId: bookSession.sessionId },
@@ -1651,7 +1628,6 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
       await persistBookSession(root, bookSession);
 
       broadcast("agent:complete", { instruction, activeBookId, sessionId: bookSession.sessionId });
-      scheduleSessionTitleGeneration(bookSession.sessionId);
 
       // If a sub_agent created a new book during this session, broadcast book:created
       // so the sidebar refreshes.
