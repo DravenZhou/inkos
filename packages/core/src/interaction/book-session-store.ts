@@ -13,6 +13,24 @@ function sessionPath(projectRoot: string, sessionId: string): string {
   return join(sessionsDir(projectRoot), `${sessionId}.json`);
 }
 
+/**
+ * 从 messages 数组里取第一条 user 消息，裁剪成 ≤20 字的单行字符串。
+ * 用于把用户首条提问作为会话标题。
+ */
+export function extractFirstUserMessageTitle(messages: unknown): string | null {
+  if (!Array.isArray(messages)) return null;
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    if ((message as { role?: unknown }).role !== "user") continue;
+    const content = (message as { content?: unknown }).content;
+    if (typeof content !== "string") return null;
+    const oneLine = content.trim().replace(/\s+/g, " ");
+    if (oneLine.length === 0) return null;
+    return oneLine.length > 20 ? `${oneLine.slice(0, 20)}…` : oneLine;
+  }
+  return null;
+}
+
 export class SessionAlreadyMigratedError extends Error {
   constructor(sessionId: string, currentBookId: string) {
     super(`Session "${sessionId}" is already bound to book "${currentBookId}"`);
@@ -83,10 +101,31 @@ export async function listBookSessions(
           ? (data.bookId as string | null)
           : null;
         if (parsedBookId !== bookId) return null;
+
+        let persistedTitle = typeof data.title === "string" ? data.title : null;
+
+        // Lazy migration：老 session 的 title 字段是 null 但已经有用户消息的，
+        // 一次性把第一条用户消息补写成 title 并 persist 回磁盘。用户在新流程中
+        // 发消息时会立即写 title，此 migration 只对历史数据生效一次。
+        if (persistedTitle === null) {
+          const recoveredTitle = extractFirstUserMessageTitle(data.messages);
+          if (recoveredTitle) {
+            try {
+              const fullSession = await loadBookSession(projectRoot, data.sessionId);
+              if (fullSession && fullSession.title === null) {
+                await persistBookSession(projectRoot, { ...fullSession, title: recoveredTitle });
+                persistedTitle = recoveredTitle;
+              }
+            } catch {
+              // 读不出完整 session 就忽略；下次再试
+            }
+          }
+        }
+
         return {
           sessionId: data.sessionId,
           bookId: parsedBookId,
-          title: typeof data.title === "string" ? data.title : null,
+          title: persistedTitle,
           messageCount: Array.isArray(data.messages) ? data.messages.length : 0,
           createdAt: typeof data.createdAt === "number" ? data.createdAt : 0,
           updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : 0,
@@ -109,18 +148,6 @@ export async function renameBookSession(
 ): Promise<BookSession | null> {
   const session = await loadBookSession(projectRoot, sessionId);
   if (!session) return null;
-  const updated = { ...session, title, updatedAt: Date.now() };
-  await persistBookSession(projectRoot, updated);
-  return updated;
-}
-
-export async function updateSessionTitle(
-  projectRoot: string,
-  sessionId: string,
-  title: string,
-): Promise<BookSession | null> {
-  const session = await loadBookSession(projectRoot, sessionId);
-  if (!session || session.title !== null) return session;
   const updated = { ...session, title, updatedAt: Date.now() };
   await persistBookSession(projectRoot, updated);
   return updated;
@@ -160,8 +187,14 @@ export async function migrateBookSession(
 export async function createAndPersistBookSession(
   projectRoot: string,
   bookId: string | null,
+  sessionId?: string,
 ): Promise<BookSession> {
-  const session = createBookSession(bookId);
+  // 如果指定了 sessionId 且对应文件已存在，视为幂等操作直接返回（支持"用户发消息时才持久化 draft"流程）
+  if (sessionId) {
+    const existing = await loadBookSession(projectRoot, sessionId);
+    if (existing) return existing;
+  }
+  const session = createBookSession(bookId, sessionId);
   await persistBookSession(projectRoot, session);
   return session;
 }

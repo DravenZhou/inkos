@@ -101,6 +101,7 @@ export type InteractionSession = z.infer<typeof InteractionSessionSchema>;
 export const BookSessionSchema = z.object({
   sessionId: z.string().min(1),
   bookId: z.string().nullable(),
+  title: z.string().nullable().default(null),
   messages: z.array(InteractionMessageSchema).default([]),
   creationDraft: BookCreationDraftSchema.optional(),
   draftRounds: z.array(DraftRoundSchema).default([]),
@@ -121,11 +122,12 @@ export const GlobalSessionSchema = z.object({
 
 export type GlobalSession = z.infer<typeof GlobalSessionSchema>;
 
-export function createBookSession(bookId: string | null): BookSession {
+export function createBookSession(bookId: string | null, sessionId?: string): BookSession {
   const now = Date.now();
   return {
-    sessionId: `${now}-${Math.random().toString(36).slice(2, 8)}`,
+    sessionId: sessionId ?? `${now}-${Math.random().toString(36).slice(2, 8)}`,
     bookId,
+    title: null,
     messages: [],
     draftRounds: [],
     events: [],
