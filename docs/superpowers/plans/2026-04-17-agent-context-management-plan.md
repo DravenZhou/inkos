@@ -20,12 +20,26 @@
 
 ```ts
 // packages/core/src/__tests__/context-transform.test.ts
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createBookContextTransform } from "../agent/context-transform.js";
 
 describe("createBookContextTransform", () => {
+  let projectRoot: string;
+  const bookId = "test-book";
+
+  beforeEach(async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "ctx-test-"));
+  });
+
+  afterEach(async () => {
+    await rm(projectRoot, { recursive: true, force: true });
+  });
+
   it("returns messages unchanged when bookId is null", async () => {
-    const transform = createBookContextTransform(null, "/tmp/test-project");
+    const transform = createBookContextTransform(null, projectRoot);
     const messages = [
       { role: "user" as const, content: "hello", timestamp: Date.now() },
     ];
@@ -69,21 +83,13 @@ pnpm test -- packages/core/src/__tests__/context-transform.test.ts
 
 Expected: PASS
 
-- [ ] **Step 5: 写测试 — bookId 存在时读取真相文件并注入 user message**
+- [ ] **Step 5: 追加测试 — bookId 存在时读取真相文件并注入 user message**
 
-需要在 `/tmp` 下创建临时文件结构来模拟 `books/{bookId}/story/` 目录。
+在 Step 1 创建的 `describe` 块内部（`it("returns messages unchanged when bookId is null", ...)` 之后），追加以下两个测试。不要新开 `describe` 块。所需的 `beforeEach/afterEach/import` 已经在 Step 1 里写好了，只需在已有 `beforeEach` 末尾加上创建真相文件的代码：
+
+首先把 Step 1 的 `beforeEach` 扩展为创建真相文件：
 
 ```ts
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-
-describe("createBookContextTransform", () => {
-  // ... 上面的 null 测试 ...
-
-  let projectRoot: string;
-  const bookId = "test-book";
-
   beforeEach(async () => {
     projectRoot = await mkdtemp(join(tmpdir(), "ctx-test-"));
     const storyDir = join(projectRoot, "books", bookId, "story");
@@ -91,11 +97,11 @@ describe("createBookContextTransform", () => {
     await writeFile(join(storyDir, "story_bible.md"), "# Story Bible\nA hero's journey.");
     await writeFile(join(storyDir, "current_focus.md"), "Focus on chapter 3.");
   });
+```
 
-  afterEach(async () => {
-    await rm(projectRoot, { recursive: true, force: true });
-  });
+然后在 `describe` 块内追加两个测试：
 
+```ts
   it("prepends a user message with truth file contents", async () => {
     const transform = createBookContextTransform(bookId, projectRoot);
     const original = [
@@ -141,7 +147,6 @@ describe("createBookContextTransform", () => {
     expect(rulesIdx).toBeLessThan(focusIdx);
     expect(focusIdx).toBeLessThan(extraIdx);
   });
-});
 ```
 
 - [ ] **Step 6: 跑测试确认失败**
@@ -240,7 +245,9 @@ pnpm test -- packages/core/src/__tests__/context-transform.test.ts
 
 Expected: PASS
 
-- [ ] **Step 9: 写测试 — story/ 目录不存在时返回原始 messages**
+- [ ] **Step 9: 追加测试 — story/ 目录不存在时返回原始 messages**
+
+在同一个 `describe` 块内追加：
 
 ```ts
   it("returns original messages when story/ directory does not exist", async () => {
@@ -377,36 +384,18 @@ import { getModel } from "@mariozechner/pi-ai";
           const fallbackModelId = config.llm.model;
           try {
             const piModel = getModel(fallbackProvider as any, fallbackModelId as any);
-            resolvedModel = piModel ?? {
-              id: fallbackModelId,
-              name: fallbackModelId,
-              api: "openai-completions",
-              provider: fallbackProvider,
-              baseUrl: "",
-              reasoning: false,
-              input: ["text"],
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              contextWindow: 0,
-              maxTokens: 16384,
-            } as any;
+            resolvedModel = piModel ?? { provider: fallbackProvider, modelId: fallbackModelId } as any;
           } catch {
-            resolvedModel = {
-              id: fallbackModelId,
-              name: fallbackModelId,
-              api: "openai-completions",
-              provider: fallbackProvider,
-              baseUrl: "",
-              reasoning: false,
-              input: ["text"],
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              contextWindow: 0,
-              maxTokens: 16384,
-            } as any;
+            resolvedModel = { provider: fallbackProvider, modelId: fallbackModelId } as any;
           }
         }
         resolvedApiKey = client._apiKey;
       }
 ```
+
+**重要说明：**
+
+不要给 fallback 对象加 `id` / `api` 字段。`agent-session.ts:95` 的 `resolveModel` 会检查 `"id" in spec && "api" in spec`：有这两个字段就当作完整 Model 直接用；没有的话会走 `getModel(provider, modelId)` 查询。fallback 对象只给 `provider` 和 `modelId` 保证查询路径被触发，如果 pi-ai 注册表查得到就拿到带正确 `contextWindow` 的完整 Model，查不到时 contextWindow 为 undefined，Task 4 的 `ratio` 会自动为 `null`，前端不显示比例。
 
 - [ ] **Step 3: 跑全量测试**
 
@@ -476,6 +465,7 @@ git commit -m "feat(studio): broadcast context:usage SSE event after each LLM ca
 **Files:**
 - Modify: `packages/studio/src/hooks/use-sse.ts`
 - Modify: `packages/studio/src/store/chat/types.ts`
+- Modify: `packages/studio/src/store/chat/slices/message/initialState.ts`
 - Modify: `packages/studio/src/store/chat/slices/message/action.ts`
 
 - [ ] **Step 1: 在 SSE 事件列表中增加 `context:usage`**
@@ -502,7 +492,40 @@ git commit -m "feat(studio): broadcast context:usage SSE event after each LLM ca
   setContextUsageRatio: (ratio: number | null) => void;
 ```
 
-- [ ] **Step 3: 在 message action slice 中实现**
+- [ ] **Step 3: 在初始 state 中加入默认值**
+
+`packages/studio/src/store/chat/slices/message/initialState.ts` 当前是：
+
+```ts
+import type { MessageState } from "../../types";
+
+export const initialMessageState: MessageState = {
+  sessions: {},
+  sessionIdsByBook: {},
+  activeSessionId: null,
+  input: "",
+  selectedModel: null,
+  selectedService: null,
+};
+```
+
+改为：
+
+```ts
+import type { MessageState } from "../../types";
+
+export const initialMessageState: MessageState = {
+  sessions: {},
+  sessionIdsByBook: {},
+  activeSessionId: null,
+  input: "",
+  selectedModel: null,
+  selectedService: null,
+  contextUsageRatio: null,
+};
+```
+
+- [ ] **Step 4: 在 message action slice 中实现**
 
 在 `packages/studio/src/store/chat/slices/message/action.ts` 的 `createMessageSlice` 返回对象中添加：
 
@@ -510,7 +533,7 @@ git commit -m "feat(studio): broadcast context:usage SSE event after each LLM ca
   setContextUsageRatio: (ratio) => set({ contextUsageRatio: ratio }),
 ```
 
-- [ ] **Step 4: 在 `sendMessage` 中监听 `context:usage` 事件**
+- [ ] **Step 5: 在 `sendMessage` 中监听 `context:usage` 事件**
 
 在 `sendMessage` 函数里，现有的 `streamEs.addEventListener("llm:progress", ...)` 之后添加：
 
@@ -527,7 +550,7 @@ git commit -m "feat(studio): broadcast context:usage SSE event after each LLM ca
     });
 ```
 
-- [ ] **Step 5: 跑全量测试**
+- [ ] **Step 6: 跑全量测试**
 
 ```bash
 pnpm test
@@ -535,10 +558,10 @@ pnpm test
 
 Expected: 全部 PASS
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
-git add packages/studio/src/hooks/use-sse.ts packages/studio/src/store/chat/types.ts packages/studio/src/store/chat/slices/message/action.ts
+git add packages/studio/src/hooks/use-sse.ts packages/studio/src/store/chat/types.ts packages/studio/src/store/chat/slices/message/initialState.ts packages/studio/src/store/chat/slices/message/action.ts
 git commit -m "feat(studio): receive context:usage SSE event in chat store"
 ```
 
@@ -624,24 +647,9 @@ git commit -m "feat(studio): add context usage ratio indicator in chat input are
 
 ---
 
-### Task 7: 初始化 store 默认值 + 全量验证
+### Task 7: 端到端验证
 
-**Files:**
-- Modify: `packages/studio/src/store/chat/store.ts`（或 store 初始化所在文件）
-
-- [ ] **Step 1: 确认 store 初始状态包含 `contextUsageRatio: null`**
-
-找到 chat store 的 create 调用，确认 `contextUsageRatio` 的初始值为 `null`。如果 store 使用 slice 组合模式，可能需要在 slice 的默认状态里加上。
-
-查找方式：
-
-```bash
-grep -r "createMessageSlice\|MessageState\|contextUsageRatio" packages/studio/src/store/chat/
-```
-
-在 store 初始化处确保 `contextUsageRatio: null` 在默认状态中。
-
-- [ ] **Step 2: 跑全量测试**
+- [ ] **Step 1: 跑全量测试确认无回归**
 
 ```bash
 pnpm test
@@ -649,23 +657,28 @@ pnpm test
 
 Expected: 全部 PASS
 
+- [ ] **Step 2: 类型检查**
+
+```bash
+pnpm build
+```
+
+Expected: 无 TypeScript 编译错误。
+
 - [ ] **Step 3: 手动端到端验证**
 
 ```bash
 pnpm dev
 ```
 
-验证清单：
-1. 打开 Studio，选一个已有书籍的 session
+打开 Studio（http://localhost:5173 或你配置的端口），按以下清单验证：
+
+1. 选一个已有书籍的 session
 2. 发一条消息（如"写下一章"）
-3. 确认 agent 回复后，输入框底栏出现 context 比例指示器
+3. 等 agent 回复完成后，确认输入框底栏的 model picker 右边出现 context 比例指示器
 4. 比例值应该大于 0%（因为注入了真相文件）
-5. 如果模型 contextWindow 为 0，比例条不显示
-6. 建书模式下（无 bookId），比例条要么不显示（context 较小），要么显示正常比例
+5. 颜色：< 60% 绿、60%-85% 黄、> 85% 红
+6. 切换到另一个使用 pi-ai 注册表里不存在的模型（比如自定义服务商）时，比例条应不显示（因为 contextWindow 为 0）
+7. 建书模式（无 bookId）下发消息，比例条正常显示（不过比例会比带书籍时低，因为没注入真相文件）
 
-- [ ] **Step 4: 提交（如有改动）**
-
-```bash
-git add -A
-git commit -m "feat(studio): initialize contextUsageRatio in chat store"
-```
+如果发现问题，回到对应 task 修复，不要在此 task 里改。
