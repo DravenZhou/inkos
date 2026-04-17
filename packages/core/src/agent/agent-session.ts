@@ -15,6 +15,7 @@ import {
   createLsTool,
   createWriteTruthFileTool,
 } from "./agent-tools.js";
+import { createBookContextTransform } from "./context-transform.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -245,6 +246,7 @@ export async function runAgentSession(
           createLsTool(projectRoot),
         ],
       },
+      transformContext: createBookContextTransform(bookId, projectRoot),
       streamFn: streamSimple,
       getApiKey: (provider: string) => {
         if (config.apiKey) return config.apiKey;
