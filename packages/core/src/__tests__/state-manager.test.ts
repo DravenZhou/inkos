@@ -771,6 +771,19 @@ describe("StateManager", () => {
       expect(runtimeStat.isDirectory()).toBe(true);
     });
 
+    it("creates Phase 5 outline/ and roles/ directories", async () => {
+      await manager.ensureControlDocuments("phase5-book");
+
+      const storyDir = join(manager.bookDir("phase5-book"), "story");
+      const outlineStat = await stat(join(storyDir, "outline"));
+      const rolesMajorStat = await stat(join(storyDir, "roles", "主要角色"));
+      const rolesMinorStat = await stat(join(storyDir, "roles", "次要角色"));
+
+      expect(outlineStat.isDirectory()).toBe(true);
+      expect(rolesMajorStat.isDirectory()).toBe(true);
+      expect(rolesMinorStat.isDirectory()).toBe(true);
+    });
+
     it("bootstraps and returns safe defaults for legacy books", async () => {
       const storyDir = join(manager.bookDir("legacy-book"), "story");
       await mkdir(storyDir, { recursive: true });
