@@ -3,6 +3,7 @@ import type { BookConfig } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { ContextPackage, RuleStack } from "../models/input-governance.js";
 import { readGenreProfile, readBookRules } from "./rules-reader.js";
+import { readStoryFrame, readVolumeMap, readCharacterContext, readCurrentStateWithFallback } from "../utils/outline-paths.js";
 import { parseWriterOutput, type ParsedWriterOutput } from "./writer-parser.js";
 import { buildGovernedMemoryEvidenceBlocks } from "../utils/governed-context.js";
 import {
@@ -45,14 +46,14 @@ export class ChapterAnalyzerAgent extends BaseAgent {
       subplotBoard, emotionalArcs, characterMatrix,
       storyBible, volumeOutline,
     ] = await Promise.all([
-      this.readFileOrDefault(join(bookDir, "story/current_state.md"), resolvedLanguage),
+      readCurrentStateWithFallback(bookDir),
       this.readFileOrDefault(join(bookDir, "story/particle_ledger.md"), resolvedLanguage),
       this.readFileOrDefault(join(bookDir, "story/pending_hooks.md"), resolvedLanguage),
       this.readFileOrDefault(join(bookDir, "story/subplot_board.md"), resolvedLanguage),
       this.readFileOrDefault(join(bookDir, "story/emotional_arcs.md"), resolvedLanguage),
-      this.readFileOrDefault(join(bookDir, "story/character_matrix.md"), resolvedLanguage),
-      this.readFileOrDefault(join(bookDir, "story/story_bible.md"), resolvedLanguage),
-      this.readFileOrDefault(join(bookDir, "story/volume_outline.md"), resolvedLanguage),
+      readCharacterContext(bookDir),
+      readStoryFrame(bookDir),
+      readVolumeMap(bookDir),
     ]);
     const parsedBookRules = await readBookRules(bookDir);
     const bookRulesBody = parsedBookRules?.body ?? "";

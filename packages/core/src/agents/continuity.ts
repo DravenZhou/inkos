@@ -6,6 +6,7 @@ import type { ContextPackage, RuleStack } from "../models/input-governance.js";
 import { readGenreProfile, readBookLanguage, readBookRules } from "./rules-reader.js";
 import { getFanficDimensionConfig, FANFIC_DIMENSIONS } from "./fanfic-dimensions.js";
 import { readFile, readdir } from "node:fs/promises";
+import { readCurrentStateWithFallback, readCharacterContext, readVolumeMap } from "../utils/outline-paths.js";
 import { filterHooks, filterSummaries, filterSubplots, filterEmotionalArcs, filterCharacterMatrix } from "../utils/context-filter.js";
 import { buildGovernedMemoryEvidenceBlocks } from "../utils/governed-context.js";
 import { join } from "node:path";
@@ -334,17 +335,17 @@ export class ContinuityAuditor extends BaseAgent {
   ): Promise<AuditResult> {
     const [diskCurrentState, diskLedger, diskHooks, styleGuideRaw, subplotBoard, emotionalArcs, characterMatrix, chapterSummaries, parentCanon, fanficCanon, volumeOutline] =
       await Promise.all([
-        this.readFileSafe(join(bookDir, "story/current_state.md")),
+        readCurrentStateWithFallback(bookDir),
         this.readFileSafe(join(bookDir, "story/particle_ledger.md")),
         this.readFileSafe(join(bookDir, "story/pending_hooks.md")),
         this.readFileSafe(join(bookDir, "story/style_guide.md")),
         this.readFileSafe(join(bookDir, "story/subplot_board.md")),
         this.readFileSafe(join(bookDir, "story/emotional_arcs.md")),
-        this.readFileSafe(join(bookDir, "story/character_matrix.md")),
+        readCharacterContext(bookDir),
         this.readFileSafe(join(bookDir, "story/chapter_summaries.md")),
         this.readFileSafe(join(bookDir, "story/parent_canon.md")),
         this.readFileSafe(join(bookDir, "story/fanfic_canon.md")),
-        this.readFileSafe(join(bookDir, "story/volume_outline.md")),
+        readVolumeMap(bookDir),
       ]);
     const currentState = options?.truthFileOverrides?.currentState ?? diskCurrentState;
     const ledger = options?.truthFileOverrides?.ledger ?? diskLedger;

@@ -35,6 +35,7 @@ import { loadNarrativeMemorySeed, loadSnapshotCurrentStateFacts } from "../state
 import { rewriteStructuredStateFromMarkdown } from "../state/state-bootstrap.js";
 import { readFile, readdir, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { readStoryFrame, readVolumeMap, readCharacterContext, readCurrentStateWithFallback } from "../utils/outline-paths.js";
 import {
   parseStateDegradedReviewNote,
   resolveStateDegradedBaseStatus,
@@ -1119,8 +1120,8 @@ export class PipelineRunner {
         readSafe(join(storyDir, "current_state.md")),
         readSafe(join(storyDir, "particle_ledger.md")),
         readSafe(join(storyDir, "pending_hooks.md")),
-        readSafe(join(storyDir, "story_bible.md")),
-        readSafe(join(storyDir, "volume_outline.md")),
+        readStoryFrame(bookDir, "(文件不存在)"),
+        readVolumeMap(bookDir, "(文件不存在)"),
         readSafe(join(storyDir, "book_rules.md")),
       ]);
 
@@ -1847,14 +1848,14 @@ export class PipelineRunner {
 
     const [storyBible, currentState, ledger, hooks, summaries, subplots, emotions, matrix] =
       await Promise.all([
-        readSafe(join(parentDir, "story/story_bible.md")),
-        readSafe(join(parentDir, "story/current_state.md")),
+        readStoryFrame(parentDir, "(无)"),
+        readCurrentStateWithFallback(parentDir, "(无)"),
         readSafe(join(parentDir, "story/particle_ledger.md")),
         readSafe(join(parentDir, "story/pending_hooks.md")),
         readSafe(join(parentDir, "story/chapter_summaries.md")),
         readSafe(join(parentDir, "story/subplot_board.md")),
         readSafe(join(parentDir, "story/emotional_arcs.md")),
-        readSafe(join(parentDir, "story/character_matrix.md")),
+        readCharacterContext(parentDir, "(无)"),
       ]);
 
     const response = await chatCompletion(this.config.client, this.config.model, [

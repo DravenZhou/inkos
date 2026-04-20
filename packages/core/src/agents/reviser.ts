@@ -5,6 +5,7 @@ import type { LengthSpec } from "../models/length-governance.js";
 import type { AuditIssue } from "./continuity.js";
 import type { ContextPackage, RuleStack } from "../models/input-governance.js";
 import { readGenreProfile, readBookLanguage, readBookRules } from "./rules-reader.js";
+import { readStoryFrame, readVolumeMap, readCharacterContext, readCurrentStateWithFallback } from "../utils/outline-paths.js";
 import { countChapterLength } from "../utils/length-metrics.js";
 import { buildGovernedMemoryEvidenceBlocks } from "../utils/governed-context.js";
 import { filterSummaries } from "../utils/context-filter.js";
@@ -74,13 +75,13 @@ export class ReviserAgent extends BaseAgent {
     },
   ): Promise<ReviseOutput> {
     const [currentState, ledger, hooks, styleGuideRaw, volumeOutline, storyBible, characterMatrix, chapterSummaries, parentCanon, fanficCanon] = await Promise.all([
-      this.readFileSafe(join(bookDir, "story/current_state.md")),
+      readCurrentStateWithFallback(bookDir),
       this.readFileSafe(join(bookDir, "story/particle_ledger.md")),
       this.readFileSafe(join(bookDir, "story/pending_hooks.md")),
       this.readFileSafe(join(bookDir, "story/style_guide.md")),
-      this.readFileSafe(join(bookDir, "story/volume_outline.md")),
-      this.readFileSafe(join(bookDir, "story/story_bible.md")),
-      this.readFileSafe(join(bookDir, "story/character_matrix.md")),
+      readVolumeMap(bookDir),
+      readStoryFrame(bookDir),
+      readCharacterContext(bookDir),
       this.readFileSafe(join(bookDir, "story/chapter_summaries.md")),
       this.readFileSafe(join(bookDir, "story/parent_canon.md")),
       this.readFileSafe(join(bookDir, "story/fanfic_canon.md")),

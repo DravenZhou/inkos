@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { BaseAgent } from "./base.js";
+import { readStoryFrame, readVolumeMap, readCurrentStateWithFallback } from "../utils/outline-paths.js";
 import type { BookConfig } from "../models/book.js";
 import { parseBookRules } from "../models/book-rules.js";
 import { ChapterIntentSchema, type ChapterConflict, type ChapterIntent } from "../models/input-governance.js";
@@ -58,11 +59,11 @@ export class PlannerAgent extends BaseAgent {
     ] = await Promise.all([
       this.readFileOrDefault(sourcePaths.authorIntent),
       this.readFileOrDefault(sourcePaths.currentFocus),
-      this.readFileOrDefault(sourcePaths.storyBible),
-      this.readFileOrDefault(sourcePaths.volumeOutline),
+      readStoryFrame(input.bookDir),
+      readVolumeMap(input.bookDir),
       this.readFileOrDefault(sourcePaths.chapterSummaries),
       this.readFileOrDefault(sourcePaths.bookRules),
-      this.readFileOrDefault(sourcePaths.currentState),
+      readCurrentStateWithFallback(input.bookDir),
     ]);
 
     const outlineNode = this.findOutlineNode(volumeOutline, input.chapterNumber);

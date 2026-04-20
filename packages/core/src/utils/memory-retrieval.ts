@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { readCurrentStateWithFallback } from "./outline-paths.js";
 import {
   ChapterSummariesStateSchema,
   CurrentStateStateSchema,
@@ -71,7 +72,7 @@ export async function retrieveMemorySelection(params: {
     structuredHooks,
     structuredSummaries,
   ] = await Promise.all([
-    readFile(join(storyDir, "current_state.md"), "utf-8").catch(() => ""),
+    readCurrentStateWithFallback(params.bookDir),
     readFile(join(storyDir, "volume_summaries.md"), "utf-8").catch(() => ""),
     readStructuredState(join(stateDir, "current_state.json"), CurrentStateStateSchema),
     readStructuredState(join(stateDir, "hooks.json"), HooksStateSchema),

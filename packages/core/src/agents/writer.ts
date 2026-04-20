@@ -8,6 +8,7 @@ import { buildObserverSystemPrompt, buildObserverUserPrompt } from "./observer-p
 import { parseSettlerDeltaOutput } from "./settler-delta-parser.js";
 import { parseSettlementOutput } from "./settler-parser.js";
 import { readGenreProfile, readBookRules } from "./rules-reader.js";
+import { readStoryFrame, readVolumeMap, readCharacterContext, readCurrentStateWithFallback } from "../utils/outline-paths.js";
 import {
   detectCrossChapterRepetition,
   detectParagraphLengthDrift,
@@ -123,16 +124,16 @@ export class WriterAgent extends BaseAgent {
       chapterSummaries, subplotBoard, emotionalArcs, characterMatrix, styleProfileRaw,
       parentCanon, fanficCanonRaw,
     ] = await Promise.all([
-        this.readFileOrDefault(join(bookDir, "story/story_bible.md")),
-        this.readFileOrDefault(join(bookDir, "story/volume_outline.md")),
+        readStoryFrame(bookDir),
+        readVolumeMap(bookDir),
         this.readFileOrDefault(join(bookDir, "story/style_guide.md")),
-        this.readFileOrDefault(join(bookDir, "story/current_state.md")),
+        readCurrentStateWithFallback(bookDir),
         this.readFileOrDefault(join(bookDir, "story/particle_ledger.md")),
         this.readFileOrDefault(join(bookDir, "story/pending_hooks.md")),
         this.readFileOrDefault(join(bookDir, "story/chapter_summaries.md")),
         this.readFileOrDefault(join(bookDir, "story/subplot_board.md")),
         this.readFileOrDefault(join(bookDir, "story/emotional_arcs.md")),
-        this.readFileOrDefault(join(bookDir, "story/character_matrix.md")),
+        readCharacterContext(bookDir),
         this.readFileOrDefault(join(bookDir, "story/style_profile.json")),
         this.readFileOrDefault(join(bookDir, "story/parent_canon.md")),
         this.readFileOrDefault(join(bookDir, "story/fanfic_canon.md")),
@@ -419,14 +420,14 @@ export class WriterAgent extends BaseAgent {
       characterMatrix,
       volumeOutline,
     ] = await Promise.all([
-      this.readFileOrDefault(join(input.bookDir, "story/current_state.md")),
+      readCurrentStateWithFallback(input.bookDir),
       this.readFileOrDefault(join(input.bookDir, "story/particle_ledger.md")),
       this.readFileOrDefault(join(input.bookDir, "story/pending_hooks.md")),
       this.readFileOrDefault(join(input.bookDir, "story/chapter_summaries.md")),
       this.readFileOrDefault(join(input.bookDir, "story/subplot_board.md")),
       this.readFileOrDefault(join(input.bookDir, "story/emotional_arcs.md")),
-      this.readFileOrDefault(join(input.bookDir, "story/character_matrix.md")),
-      this.readFileOrDefault(join(input.bookDir, "story/volume_outline.md")),
+      readCharacterContext(input.bookDir),
+      readVolumeMap(input.bookDir),
     ]);
 
     const { profile: genreProfile } = await readGenreProfile(this.ctx.projectRoot, input.book.genre);
