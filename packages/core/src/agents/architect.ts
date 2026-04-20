@@ -6,12 +6,38 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { renderHookSnapshot } from "../utils/memory-retrieval.js";
 
+export interface ArchitectRole {
+  readonly tier: "major" | "minor";
+  readonly name: string;
+  readonly content: string;
+}
+
 export interface ArchitectOutput {
   readonly storyBible: string;
   readonly volumeOutline: string;
   readonly bookRules: string;
   readonly currentState: string;
   readonly pendingHooks: string;
+  // Phase 5 新增字段：段落式架构稿 + 一人一卡角色目录。Optional，老测试 fixture 只 mock
+  // 旧字段时依然能编译；架构师在运行时始终填充这些。
+  readonly storyFrame?: string;
+  readonly volumeMap?: string;
+  readonly rhythmPrinciples?: string;
+  readonly roles?: ReadonlyArray<ArchitectRole>;
+}
+
+/** 拆 markdown 的首部 YAML frontmatter 和正文。没有 frontmatter 时返回 frontmatter: null。 */
+function extractYamlFrontmatter(raw: string): { frontmatter: string | null; body: string } {
+  if (!raw) return { frontmatter: null, body: "" };
+  const stripped = raw.replace(/^```(?:md|markdown|yaml)?\s*\n/, "").replace(/\n```\s*$/, "");
+  const leadingMatch = stripped.match(/^\s*---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
+  if (!leadingMatch) {
+    return { frontmatter: null, body: stripped };
+  }
+  return {
+    frontmatter: `---\n${leadingMatch[1]}\n---`,
+    body: leadingMatch[2].trim(),
+  };
 }
 
 export class ArchitectAgent extends BaseAgent {
@@ -46,108 +72,166 @@ export class ArchitectAgent extends BaseAgent {
       ? "- 需要年代考据支撑（在 book_rules 中设置 eraConstraints）"
       : "";
 
-    const storyBiblePrompt = resolvedLanguage === "en"
-      ? `Use structured second-level headings:
-## 01_Worldview
-World setting, historical-social frame, and core rules
+    const systemPrompt = resolvedLanguage === "en"
+      ? this.buildEnglishFoundationPrompt(book, gp, genreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock)
+      : this.buildChineseFoundationPrompt(book, gp, genreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock);
 
-## 02_Protagonist
-Protagonist setup (identity / advantage / personality core / behavioral boundaries)
+    const langPrefix = resolvedLanguage === "en"
+      ? `【LANGUAGE OVERRIDE】ALL output (story_frame, volume_map, roles, book_rules, pending_hooks) MUST be written in English. Character names, place names, and all prose must be in English. The === SECTION: === tags remain unchanged. Do NOT emit rhythm_principles or current_state sections — rhythm principles live inside the last paragraph of volume_map; environment/era anchors (when relevant) are woven into story_frame's world-tonal-ground paragraph.\n\n`
+      : "";
+    const userMessage = resolvedLanguage === "en"
+      ? `Generate the complete foundation for a ${gp.name} novel titled "${book.title}". Write everything in English.`
+      : `请为标题为"${book.title}"的${gp.name}小说生成完整基础设定。`;
 
-## 03_Factions_and_Characters
-Major factions and important supporting characters (for each: name, identity, motivation, relationship to protagonist, independent goal)
+    const response = await this.chat([
+      { role: "system", content: langPrefix + systemPrompt },
+      { role: "user", content: userMessage },
+    ], { temperature: 0.8, maxTokens: 16384 });
 
-## 04_Geography_and_Environment
-Map / scene design and environmental traits
+    return this.parseSections(response.content);
+  }
 
-## 05_Title_and_Blurb
-Title method:
-- Keep the title clear, direct, and easy to understand
-- Use a format that immediately signals genre and core appeal
-- Avoid overly literary or misleading titles
+  // -------------------------------------------------------------------------
+  // Phase 5 段落式 prompt — zh
+  // -------------------------------------------------------------------------
+  private buildChineseFoundationPrompt(
+    book: BookConfig,
+    gp: GenreProfile,
+    genreBody: string,
+    contextBlock: string,
+    reviewFeedbackBlock: string,
+    numericalBlock: string,
+    powerBlock: string,
+    eraBlock: string,
+  ): string {
+    return `你是这本书的总架构师。你的唯一输出是**段落密度的基础设定**——不是表格、不是 schema、不是条目化 bullet。这本书的"灵气"从你这里来。你的段落密度决定了后面 planner 能不能读出"稀疏 memo"，writer 能不能写出活人，reviewer 能不能校准硬伤。${contextBlock}${reviewFeedbackBlock}
 
-Blurb method (within 300 words, choose one):
-1. Open with conflict, then reveal the hook, then leave suspense
-2. Summarize only the main line and keep a clear suspense gap
-3. Use a miniature scene that captures the book's strongest pull
+## 书籍元信息
+- 平台：${book.platform}
+- 题材：${gp.name}（${book.genre}）
+- 目标章数：${book.targetChapters}章
+- 每章字数：${book.chapterWordCount}字
+- 标题：${book.title}
 
-Core blurb principle:
-- The blurb is product copy that must make readers want to click`
-      : `用结构化二级标题组织：
-## 01_世界观
-世界观设定、核心规则体系
+## 题材底色
+${genreBody}
 
-## 02_主角
-主角设定（身份/金手指/性格底色/行为边界）
+## 产出约束（硬性）
+${numericalBlock}
+${powerBlock}
+${eraBlock}
 
-## 03_势力与人物
-势力分布、重要配角（每人：名字、身份、动机、与主角关系、独立目标）
+## 输出结构（5 个 SECTION，严格按 === SECTION: === 分块，不要漏任何一块）
 
-## 04_地理与环境
-地图/场景设定、环境特色
+## 去重铁律（必读）
+禁止在多段里重复同一事实。主角的完整角色线只写在 roles；世界铁律只写在 story_frame.世界观底色；节奏原则只写在 volume_map 最后一段；角色当前现状只写在 roles.当前现状；初始钩子只写在 pending_hooks（startChapter=0 行）。**如果本书是年代文/历史同人/都市重生等需要年份、季节、重大历史事件作为锚点的题材**，把环境/时代锚自然织进 story_frame.世界观底色（"1985 年 7 月，非典刚过"这类）；**修仙/玄幻/系统等没有真实年份的题材直接省略**，不要硬凑。如果一个段落写了另一段的内容，删掉。
 
-## 05_书名与简介
-书名方法论：
-- 书名必须简单扼要、通俗易懂，读者看到书名就能知道题材和主题
-- 采用"题材+核心爽点+主角行为"的长书名格式，避免文艺化
-- 融入平台当下热点词汇，吸引精准流量
-- 禁止题材错位（都市文取玄幻书名会导致读者流失）
-- 参考热榜书名风格：俏皮、通俗、有记忆点
+## 预算（超预算必删）
+- story_frame ≤ 3000 字
+- volume_map ≤ 5000 字
+- roles 总 ≤ 8000 字
+- book_rules ≤ 500 字（仅 YAML）
+- pending_hooks ≤ 2000 字
 
-简介方法论（300字内，三种写法任选其一）：
-1. 冲突开篇法：第一句抛困境/冲突，第二句亮金手指/核心能力，第三句留悬念
-2. 高度概括法：只挑主线概括（不是全篇概括），必须留悬念
-3. 小剧场法：提炼故事中最经典的桥段，作为引子
+=== SECTION: story_frame ===
 
-简介核心原则：
-- 简介 = 产品宣传语，必须让读者产生"我要点开看"的冲动
-- 可以从剧情设定、人设、或某个精彩片段切入
-- 必须有噱头（如"凡是被写在笔记本上的名字，最后都得死"）`;
+这是段落式骨架。**4 段**，每段约 600-900 字，不要写表格，不要写 bullet list，写成能被人读下去的段落。段落标题用 \`## \` 开头，段落内部是正经段落。**主角的完整角色线不写在本 section；它的权威来源是 roles/主要角色/<主角>.md。** 本段只需一句指针："本书主角是 X，完整角色线详见 roles/主要角色/X.md"。
 
-    const volumeOutlinePrompt = resolvedLanguage === "en"
-      ? `Volume plan. For each volume include: title, chapter range, core conflict, key turning points, and payoff goal
+### 段 1：主题与基调
+写这本书到底讲的是什么——不是"讲主角如何从弱到强"这种空话，而是具体的命题（"一个被时代按在泥里的人，如何选择不被改写"、"当所有人都在撒谎时，坚持记录真相要付出什么代价"）。主题下面跟着基调——温情冷冽悲壮肃杀，哪一种？为什么是这种而不是另一种？结尾用一句话指向主角并引向 roles（例："本书主角是林辞，完整角色线详见 roles/主要角色/林辞.md"）。
 
-### Golden First Three Chapters Rule
-- Chapter 1: throw the core conflict immediately; no large background dump
-- Chapter 2: show the core edge / ability / leverage that answers Chapter 1's pressure
-- Chapter 3: establish the first concrete short-term goal that gives readers a reason to continue`
-      : `卷纲规划，每卷包含：卷名、章节范围、核心冲突、关键转折、收益目标
+### 段 2：核心冲突与对手定性
+这本书的主要矛盾是什么？不是"正邪对抗"，而是"因为 A 相信 X、B 相信 Y，所以他们一定会在某件事上对撞"。主要对手是谁（至少 2 个：一个显性对手 + 一个结构性对手/体制），他们的动机从哪里长出来。对手不是工具，对手有自己的逻辑。
+
+### 段 3：世界观底色（铁律 + 质感 + 本书专属规则）
+这个世界的运行规则是什么？3-5 条**不可违反的铁律**——以段落形式写出，不要 bullet。这个世界的质感是什么——湿的还是干的、快的还是慢的、噪的还是静的？给 writer 一个明确的感官锚。**这一段同时承担原先 book_rules 正文里写的"叙事视角 / 本书专属规则 / 核心冲突驱动"等内容**——全部合并到这里写一次就够，不要再去 book_rules 重复。
+
+### 段 4：终局方向
+这本书最后一章大概是什么感觉——不是"主角登顶"、"大结局"这种套话，而是**最后一个镜头**大致长什么样。主角最后在哪、做什么、身边有谁、心里想什么。这是给全书所有后面的规划一个远方靶子。
+
+=== SECTION: volume_map ===
+
+这是分卷段落式地图，**5 段主体 + 1 段节奏原则尾段**。**关键要求：只写到卷级内容**——写清楚每卷的主题、情绪曲线、卷间钩子、角色阶段目标、卷尾不可逆事件。**禁止指定具体章号任务**（不要写"第 17 章让他回家"这种章级布局）。章级规划是 Phase 3 planner 的职责，架构师只搭骨架、不编章目。
+
+### 段 1：各卷主题与情绪曲线
+有几卷？每卷的主题一句话，每卷的情绪曲线一段（哪里压、哪里爽、哪里冷、哪里暖）。不要机械的"第一卷打小怪第二卷打大怪"，写情绪的流动。
+
+### 段 2：卷间钩子与回收承诺
+第 1 卷埋什么钩子、在哪一卷回收；第 2 卷埋什么、在哪一卷回收。段落式写，不要表格。**只写卷级**（如"第 1 卷埋的身世之谜在第 3 卷回收"），不要写具体章号。
+
+### 段 3：角色阶段性目标
+主角在第 1 卷末要到什么状态？第 2 卷末？每一卷结束时主角的身份/关系/能力/心境应该是什么。次要角色的阶段性变化也要点到（师父在第 2 卷会死、对手在第 3 卷会黑化等）。写阶段性，不写完整角色线（完整角色线在 roles）。
+
+### 段 4：卷尾必须发生的改变
+每一卷最后一章必须发生什么不可逆的事——权力结构改变、关系破裂、秘密暴露、主角身份重定位。写段落，一卷一段。**只写"必须发生什么"，不指定是第几章**。
+
+### 段 5：节奏原则（具体化 + 通用）
+**这是节奏原则的唯一归宿，不再有独立 rhythm_principles section。** 本段输出 6 条节奏原则。**至少 3 条必须具体化到本书**（例："前 30 章每 5 章一个小爽点"），其余可保留通用原则（例："拒绝机械降神"、"高潮前 3-5 章埋伏笔"）。具体化 + 通用混合是合法的。反面例子："节奏要张弛有度"（废话）。正面例子："前 30 章每 5 章一个小爽点，且小爽点必须落在章末 300 字内"。6 条各写 2-3 句，覆盖（顺序不强制、可替换同权重议题）：
+1. 高潮间距——本书大高潮之间最长多少章？（具体化优先）
+2. 喘息频率——高压段多长必须插一章喘息？喘息章承担什么任务？
+3. 钩子密度——每章章末留钩数量，主钩最多允许悬多少章？
+4. 信息释放节奏——主线信息在前 1/3、中段、后 1/3 分别释放多少比例？（可通用）
+5. 爽点节奏——爽点间距多少章一个？什么类型为主？（具体化优先）
+6. 情感节点递进——情感关系每多少章必须有一次实质推进？
 
 ### 黄金三章法则（前三章必须遵循）
 - 第1章：抛出核心冲突（主角立即面临困境/危机/选择），禁止大段背景灌输
 - 第2章：展示金手指/核心能力（主角如何应对第1章的困境），让读者看到爽点预期
-- 第3章：明确短期目标（主角确立第一个具体可达成的目标），给读者追读理由`;
+- 第3章：明确短期目标（主角确立第一个具体可达成的目标），给读者追读理由
 
-    const bookRulesPrompt = resolvedLanguage === "en"
-      ? `Generate book_rules.md as YAML frontmatter plus narrative guidance:
-\`\`\`
----
-version: "1.0"
-protagonist:
-  name: (protagonist name)
-  personalityLock: [(3-5 personality keywords)]
-  behavioralConstraints: [(3-5 behavioral constraints)]
-genreLock:
-  primary: ${book.genre}
-  forbidden: [(2-3 forbidden style intrusions)]
-${gp.numericalSystem ? `numericalSystemOverrides:
-  hardCap: (decide from the setting)
-  resourceTypes: [(core resource types)]` : ""}
-prohibitions:
-  - (3-5 book-specific prohibitions)
-chapterTypesOverride: []
-fatigueWordsOverride: []
-additionalAuditDimensions: []
-enableFullCastTracking: false
----
+=== SECTION: roles ===
 
-## Narrative Perspective
-(Describe the narrative perspective and style)
+一人一卡。**主角卡是本书角色线的唯一权威来源**——story_frame 不再写主角的完整角色线，writer/planner 都从这里读。用以下格式分隔：
 
-## Core Conflict Driver
-(Describe the book's core conflict and propulsion)
-\`\`\``
-      : `生成 book_rules.md 格式的 YAML frontmatter + 叙事指导，包含：
+---ROLE---
+tier: major
+name: <角色名>
+---CONTENT---
+（这里写段落式角色卡，下面的小标题必须全部出现，每段至少 3 行正经段落，不要写表格）
+
+## 核心标签
+（3-5 个关键词 + 一句话为什么是这些词）
+
+## 反差细节
+（1-2 个与核心标签反差的具体细节——"冷酷杀手但会给流浪猫留鱼骨"。反差细节是人物立体化的公式，必须有。）
+
+## 人物小传（过往经历）
+（一段段落，说这个人怎么变成现在这样。童年/重大事件/塑造性格的那件事。只写关键过往，简版。）
+
+## 主角线（起点 → 终点 → 代价）
+**只有主角必须写本段；其他 major 角色如果分量重也可以写，否则略过。**主角从哪里出发（身份、处境、核心缺陷、一开始最想要什么），到哪里落脚（最终变成什么样的人、拿到/失去什么），为了这个落脚他付出了什么不可逆的代价（关系、身体、信念、某段过去）。不要只写"变强"这种平面变化，要写**内在的位移**。写足写实。
+
+## 当前现状（第 0 章初始状态）
+（第 0 章时他在哪、做什么、处境如何、最近最烦心的事。**只写角色个人处境**——初始钩子写在 pending_hooks 的 startChapter=0 行；环境/时代锚（如果是需要年份的题材）织进 story_frame.世界观底色。不再有独立的 current_state section。）
+
+## 关系网络
+（与主角、与其他重要角色的关系——一句话一条，关系不是标签是动态。）
+
+## 内在驱动
+（他想要什么、为什么想要、愿意付出什么代价。）
+
+## 成长变化
+（他在这本书里会经历什么内在位移——变好变坏变复杂，落在哪里。非主角可短可长。）
+
+---ROLE---
+tier: major
+name: <下一个主要角色>
+---CONTENT---
+...
+
+（主要角色至少 3 个：主角 + 主要对手 + 主要协作者。建议 2-3 主 + 2-3 辅，不要灌水。质量 > 数量。）
+
+---ROLE---
+tier: minor
+name: <次要角色名>
+---CONTENT---
+（次要角色简化版，只需要 4 个小标题：核心标签 / 反差细节 / 当前现状 / 与主角关系，每段 1-2 行即可）
+
+（次要角色 3-5 个，按出场密度给。）
+
+=== SECTION: book_rules ===
+
+**只输出 YAML frontmatter 一块——零段落正文。** 所有的"叙事视角 / 本书专属规则 / 核心冲突驱动"等段落已经合并到 story_frame.世界观底色，不要在这里重复写。
 \`\`\`
 ---
 version: "1.0"
@@ -168,120 +252,203 @@ fatigueWordsOverride: []
 additionalAuditDimensions: []
 enableFullCastTracking: false
 ---
+\`\`\`
 
-## 叙事视角
-(描述本书叙事视角和风格)
+=== SECTION: pending_hooks ===
 
-## 核心冲突驱动
-(描述本书的核心矛盾和驱动力)
-\`\`\``;
-
-    const currentStatePrompt = resolvedLanguage === "en"
-      ? `Initial state card (Chapter 0), include:
-| Field | Value |
-| --- | --- |
-| Current Chapter | 0 |
-| Current Location | (starting location) |
-| Protagonist State | (initial condition) |
-| Current Goal | (first goal) |
-| Current Constraint | (initial constraint) |
-| Current Alliances | (initial relationships) |
-| Current Conflict | (first conflict) |`
-      : `初始状态卡（第0章），包含：
-| 字段 | 值 |
-|------|-----|
-| 当前章节 | 0 |
-| 当前位置 | (起始地点) |
-| 主角状态 | (初始状态) |
-| 当前目标 | (第一个目标) |
-| 当前限制 | (初始限制) |
-| 当前敌我 | (初始关系) |
-| 当前冲突 | (第一个冲突) |`;
-
-    const pendingHooksPrompt = resolvedLanguage === "en"
-      ? `Initial hook pool (Markdown table):
-| hook_id | start_chapter | type | status | last_advanced_chapter | expected_payoff | payoff_timing | notes |
-
-Rules for the hook table:
-- Column 5 must be a pure chapter number, never natural-language description
-- During book creation, all planned hooks are still unapplied, so last_advanced_chapter = 0
-- Column 7 must be one of: immediate / near-term / mid-arc / slow-burn / endgame
-- If you want to describe the initial clue/signal, put it in notes instead of column 5`
-      : `初始伏笔池（Markdown表格）：
+初始伏笔池（Markdown表格，8 列基础版）：
 | hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 备注 |
 
 伏笔表规则：
 - 第5列必须是纯数字章节号，不能写自然语言描述
 - 建书阶段所有伏笔都还没正式推进，所以第5列统一填 0
 - 第7列必须填写：立即 / 近期 / 中程 / 慢烧 / 终局 之一
-- 如果要说明“初始线索/最初信号”，写进备注，不要写进第5列`;
+- 初始线索放备注列，不放第5列
+- **初始世界状态 / 初始敌我关系** 如果有关键信息（例如"主角身上带着父亲的笔记本"、"体制已经开始监视码头"），可以作为 startChapter=0 的种子行录入，备注列说明其"初始状态"属性
 
-    const finalRequirementsPrompt = resolvedLanguage === "en"
-      ? `Generated content must:
-1. Fit the ${book.platform} platform taste
-2. Fit the ${gp.name} genre traits
-${numericalBlock}
-${powerBlock}
-${eraBlock}
-3. Give the protagonist a clear personality and behavioral boundaries
-4. Keep hooks and payoffs coherent
-5. Make supporting characters independently motivated rather than pure tools`
-      : `生成内容必须：
-1. 符合${book.platform}平台口味
-2. 符合${gp.name}题材特征
-${numericalBlock}
-${powerBlock}
-${eraBlock}
-3. 主角人设鲜明，有明确行为边界
-4. 伏笔前后呼应，不留悬空线
-5. 配角有独立动机，不是工具人`;
+## 最后强调
+- 符合${book.platform}平台口味、${gp.name}题材特征
+- 主角人设鲜明、行为边界清晰
+- 伏笔前后呼应、配角有独立动机不是工具人
+- **story_frame / volume_map / roles 必须是段落密度，不要退化成 bullet**
+- **book_rules 只留 YAML，不要写段落正文**
+- **不要输出 rhythm_principles 或 current_state 独立 section**——节奏原则合并进 volume_map 尾段；角色初始状态写在 roles.当前现状，初始钩子写在 pending_hooks（startChapter=0 行），环境/时代锚（仅历史/年代/都市重生等需要年份的题材）织进 story_frame.世界观底色，不要硬凑`;
+  }
 
-    const systemPrompt = `你是一个专业的网络小说架构师。你的任务是为一本新的${gp.name}小说生成完整的基础设定。${contextBlock}${reviewFeedbackBlock}
+  // -------------------------------------------------------------------------
+  // Phase 5 段落式 prompt — en
+  // -------------------------------------------------------------------------
+  private buildEnglishFoundationPrompt(
+    book: BookConfig,
+    gp: GenreProfile,
+    genreBody: string,
+    contextBlock: string,
+    reviewFeedbackBlock: string,
+    numericalBlock: string,
+    powerBlock: string,
+    eraBlock: string,
+  ): string {
+    return `You are the architect of this book. Your only job is to produce **prose-density foundation design** — not tables, not schema, not bullet lists. The book's aura comes from your prose density: the Phase 3 planner reads sparse memos out of your volume_map only if it was written to chapter-level prose; the writer only produces living characters because your role sheets carry contrast details; the reviewer only catches hard errors because your story_frame set the tonal anchors.${contextBlock}${reviewFeedbackBlock}
 
-要求：
-- 平台：${book.platform}
-- 题材：${gp.name}（${book.genre}）
-- 目标章数：${book.targetChapters}章
-- 每章字数：${book.chapterWordCount}字
+## Book metadata
+- Platform: ${book.platform}
+- Genre: ${gp.name} (${book.genre})
+- Target chapters: ${book.targetChapters}
+- Chapter length: ${book.chapterWordCount}
+- Title: ${book.title}
 
-## 题材特征
-
+## Genre body
 ${genreBody}
 
-## 生成要求
+## Output constraints
+${numericalBlock}
+${powerBlock}
+${eraBlock}
 
-你需要生成以下内容，每个部分用 === SECTION: <name> === 分隔：
+## Output contract (5 === SECTION: === blocks)
 
-=== SECTION: story_bible ===
-${storyBiblePrompt}
+## Deduplication rule (MANDATORY)
+Do not duplicate the same fact across sections. The protagonist's full character arc lives only in roles; world hard-rules live only in story_frame; rhythm principles live only in the last paragraph of volume_map; character initial status lives only in roles.Current_State; initial hooks live only in pending_hooks (start_chapter=0 rows). **When the book is period fiction / historical fanfic / urban reincarnation** — anything pinned to a real year, season, or historic marker — weave the environment/era anchor into story_frame's world-tonal-ground paragraph. **For cultivation / high-fantasy / system genres that have no real-world year, skip it entirely** — do not fabricate an era anchor. If a section repeats content that belongs elsewhere, delete it.
 
-=== SECTION: volume_outline ===
-${volumeOutlinePrompt}
+## Output budget (over-budget means cut)
+- story_frame ≤ 3000 chars
+- volume_map ≤ 5000 chars
+- roles ≤ 8000 chars total
+- book_rules ≤ 500 chars (YAML only)
+- pending_hooks ≤ 2000 chars
+
+=== SECTION: story_frame ===
+
+Four prose sections, ~600-900 chars each. No tables. No bullet lists. Real paragraphs. **Do NOT write the protagonist's full character arc here** — that is owned by roles/主要角色/<protagonist>.md. Use a single-line pointer inside this block.
+
+## 01_Theme_and_Tonal_Ground
+What is this book actually about — not "hero grows from weak to strong" (empty), but a concrete proposition. Then the tonal ground: warm / cold / fierce / severe — which, and why this and not another. End with a one-line pointer to the protagonist role file.
+
+## 02_Core_Conflict_and_Opponent
+The book's main tension — not "good vs evil" but "because A believes X and B believes Y, they will inevitably collide on Z". At least two opponents: one visible, one structural/systemic. Opponents have their own logic.
+
+## 03_World_Tonal_Ground (hard rules + sensory tone + book-specific rules)
+The world's operating rules. 3-5 unbreakable laws written as prose, not bullets. Sensory texture: wet or dry, fast or slow, noisy or quiet — give the writer an anchor. **This paragraph also absorbs the narrative prose that used to live in book_rules** (narrative perspective, core conflict driver, book-specific rules). Write them all here once. Do not repeat them in book_rules.
+
+## 04_Endgame_Direction
+What the last chapter roughly feels like. The final shot: where, doing what, around whom, thinking what. A distant target for every planner call downstream.
+
+=== SECTION: volume_map ===
+
+Prose volume map, **5 sections + 1 closing rhythm paragraph**. **Critical requirement: stay at volume-level prose only**. No chapter-level task assignment.
+
+## 01_Volume_Themes_and_Emotional_Curves
+How many volumes? Each volume's theme in one sentence; each volume's emotional curve as a paragraph.
+
+## 02_Cross_Volume_Hooks_and_Payoff_Promises
+Volume 1 plants hook A, paid off in volume N; volume 2 plants hook B, paid off in volume M. Prose, not tables. **Stay at volume-level**.
+
+## 03_Character_Stage_Goals
+Protagonist's state at end of vol 1, vol 2, ... Supporting characters' stage changes. Stage goals only — full character arc lives in roles.
+
+## 04_Volume_End_Mandatory_Changes
+Each volume's last chapter must contain an irreversible event. Prose, one paragraph per volume.
+
+## 05_Rhythm_Principles (concrete + universal)
+**Single home for rhythm principles — no separate rhythm_principles section.** 6 rhythm principles. **At least 3 must be concretized for this book**; the rest may stay as universal rules.
+
+### Golden First Three Chapters Rule
+- Chapter 1: throw the core conflict immediately; no large background dump
+- Chapter 2: show the core edge / ability / leverage that answers Chapter 1's pressure
+- Chapter 3: establish the first concrete short-term goal that gives readers a reason to continue
+
+=== SECTION: roles ===
+
+One-file-per-character prose. **The protagonist card is the single source of truth for the protagonist's full character arc** — story_frame no longer carries it, and writer/planner both read it here.
+
+---ROLE---
+tier: major
+name: <character name>
+---CONTENT---
+## Core_Tags
+(3-5 tags + one sentence on why)
+
+## Contrast_Detail
+(1-2 concrete details that contradict the core tags.)
+
+## Back_Story
+(Prose paragraph — how this person became who they are.)
+
+## Protagonist_Arc (start → end → cost)
+**Mandatory for the protagonist; optional for other majors with substantial arcs.** Internal displacement, not just growth.
+
+## Current_State (initial state at chapter 0)
+(Character-only: initial hooks go in pending_hooks start_chapter=0 rows; environment/era anchors weave into story_frame.)
+
+## Relationship_Network
+(With protagonist, with other majors. One line each.)
+
+## Inner_Driver
+(What they want, why, what they're willing to pay.)
+
+## Growth_Arc
+(Internal displacement across the book.)
+
+---ROLE---
+tier: major
+name: <next major>
+---CONTENT---
+...
+
+(Aim for 2-3 majors + 2-3 supporting majors. Quality over quantity.)
+
+---ROLE---
+tier: minor
+name: <minor name>
+---CONTENT---
+(Simplified: Core_Tags / Contrast_Detail / Current_State / Relationship_to_Protagonist only, 1-2 lines each.)
+
+(3-5 minors.)
 
 === SECTION: book_rules ===
-${bookRulesPrompt}
 
-=== SECTION: current_state ===
-${currentStatePrompt}
+**Output ONLY the YAML frontmatter block — zero prose.** All narrative guidance moved into story_frame.03_World_Tonal_Ground.
+\`\`\`
+---
+version: "1.0"
+protagonist:
+  name: (protagonist name)
+  personalityLock: [(3-5 personality keywords)]
+  behavioralConstraints: [(3-5 behavioral constraints)]
+genreLock:
+  primary: ${book.genre}
+  forbidden: [(2-3 forbidden style intrusions)]
+${gp.numericalSystem ? `numericalSystemOverrides:
+  hardCap: (decide from setting)
+  resourceTypes: [(core resource types)]` : ""}
+prohibitions:
+  - (3-5 book-specific prohibitions)
+chapterTypesOverride: []
+fatigueWordsOverride: []
+additionalAuditDimensions: []
+enableFullCastTracking: false
+---
+\`\`\`
 
 === SECTION: pending_hooks ===
-${pendingHooksPrompt}
 
-${finalRequirementsPrompt}`;
+Initial hook pool (Markdown table, 8-column base):
+| hook_id | start_chapter | type | status | last_advanced_chapter | expected_payoff | payoff_timing | notes |
 
-    const langPrefix = resolvedLanguage === "en"
-      ? `【LANGUAGE OVERRIDE】ALL output (story_bible, volume_outline, book_rules, current_state, pending_hooks) MUST be written in English. Character names, place names, and all prose must be in English. The === SECTION: === tags remain unchanged.\n\n`
-      : "";
-    const userMessage = resolvedLanguage === "en"
-      ? `Generate the complete foundation for a ${gp.name} novel titled "${book.title}". Write everything in English.`
-      : `请为标题为"${book.title}"的${gp.name}小说生成完整基础设定。`;
+Rules:
+- Column 5 is a pure chapter number, not narrative description
+- At book creation all planned hooks have last_advanced_chapter = 0
+- Column 7 must be: immediate / near-term / mid-arc / slow-burn / endgame
+- Put initial signal text in notes, not column 5
+- **Initial world / alliance state**: any load-bearing initial condition can be seeded as a start_chapter=0 row with a notes tag indicating its initial-state nature
 
-    const response = await this.chat([
-      { role: "system", content: langPrefix + systemPrompt },
-      { role: "user", content: userMessage },
-    ], { temperature: 0.8, maxTokens: 16384 });
-
-    return this.parseSections(response.content);
+## Final emphasis
+- Fit ${book.platform} platform taste and ${gp.name} genre traits
+- Protagonist persona clear with sharp behavioral boundaries
+- Hooks planted with payoff promises; supporting characters have independent motivation
+- **story_frame / volume_map / roles must be prose density — no bullet-list degradation**
+- **book_rules is YAML only — no prose body**
+- **Do NOT emit rhythm_principles or current_state as separate sections** — rhythm principles live in the last paragraph of volume_map; character initial status goes in roles.Current_State; initial hooks go in pending_hooks (start_chapter=0 rows); environment/era anchors (only when the genre has a real year) are woven into story_frame`;
   }
 
   async writeFoundationFiles(
@@ -291,52 +458,120 @@ ${finalRequirementsPrompt}`;
     language: "zh" | "en" = "zh",
   ): Promise<void> {
     const storyDir = join(bookDir, "story");
-    await mkdir(storyDir, { recursive: true });
+    const outlineDir = join(storyDir, "outline");
+    const rolesDir = join(storyDir, "roles");
+    const rolesMajorDir = join(rolesDir, "主要角色");
+    const rolesMinorDir = join(rolesDir, "次要角色");
 
-    const writes: Array<Promise<void>> = [
-      writeFile(join(storyDir, "story_bible.md"), output.storyBible, "utf-8"),
-      writeFile(join(storyDir, "volume_outline.md"), output.volumeOutline, "utf-8"),
-      writeFile(join(storyDir, "book_rules.md"), output.bookRules, "utf-8"),
-      writeFile(join(storyDir, "current_state.md"), output.currentState, "utf-8"),
-      writeFile(join(storyDir, "pending_hooks.md"), output.pendingHooks, "utf-8"),
-    ];
+    await Promise.all([
+      mkdir(storyDir, { recursive: true }),
+      mkdir(outlineDir, { recursive: true }),
+      mkdir(rolesMajorDir, { recursive: true }),
+      mkdir(rolesMinorDir, { recursive: true }),
+    ]);
 
-    if (numericalSystem) {
-      writes.push(
-        writeFile(
-          join(storyDir, "particle_ledger.md"),
-          language === "en"
-            ? "# Resource Ledger\n\n| Chapter | Opening Value | Source | Integrity | Delta | Closing Value | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n| 0 | 0 | Initialization | - | 0 | 0 | Initial book state |\n"
-            : "# 资源账本\n\n| 章节 | 期初值 | 来源 | 完整度 | 增量 | 期末值 | 依据 |\n|------|--------|------|--------|------|--------|------|\n| 0 | 0 | 初始化 | - | 0 | 0 | 开书初始 |\n",
-          "utf-8",
-        ),
-      );
-    }
+    const writes: Array<Promise<void>> = [];
 
-    // Initialize new truth files
-    writes.push(
-      writeFile(
-        join(storyDir, "subplot_board.md"),
-        language === "en"
-          ? "# Subplot Board\n\n| Subplot ID | Subplot | Related Characters | Start Chapter | Last Active Chapter | Chapters Since | Status | Progress Summary | Payoff ETA |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
-          : "# 支线进度板\n\n| 支线ID | 支线名 | 相关角色 | 起始章 | 最近活跃章 | 距今章数 | 状态 | 进度概述 | 回收ETA |\n|--------|--------|----------|--------|------------|----------|------|----------|---------|\n",
+    const storyFrame = output.storyFrame ?? "";
+    const volumeMap = output.volumeMap ?? "";
+    const rhythmPrinciples = output.rhythmPrinciples ?? "";
+    const roles = output.roles ?? [];
+    const isPhase5Output = storyFrame.trim().length > 0;
+
+    if (isPhase5Output) {
+      // book_rules 的 YAML frontmatter 提取后拼到 story_frame.md 顶部，作为权威位置。
+      const { frontmatter: bookRulesFrontmatter, body: bookRulesBody } =
+        extractYamlFrontmatter(output.bookRules);
+      const storyFrameWithFrontmatter = bookRulesFrontmatter
+        ? `${bookRulesFrontmatter}\n\n${storyFrame.trim()}\n`
+        : storyFrame;
+
+      // Phase 5 权威文件
+      writes.push(writeFile(join(outlineDir, "story_frame.md"), storyFrameWithFrontmatter, "utf-8"));
+      writes.push(writeFile(join(outlineDir, "volume_map.md"), volumeMap, "utf-8"));
+      if (rhythmPrinciples.trim()) {
+        const rhythmFileName = language === "en" ? "rhythm_principles.md" : "节奏原则.md";
+        writes.push(writeFile(join(outlineDir, rhythmFileName), rhythmPrinciples, "utf-8"));
+      }
+
+      // 一人一卡
+      for (const role of roles) {
+        const targetDir = role.tier === "major" ? rolesMajorDir : rolesMinorDir;
+        const safeName = role.name.replace(/[/\\:*?"<>|]/g, "_").trim();
+        if (!safeName) continue;
+        writes.push(writeFile(join(targetDir, `${safeName}.md`), role.content, "utf-8"));
+      }
+
+      // Legacy shim 文件
+      writes.push(writeFile(
+        join(storyDir, "story_bible.md"),
+        this.buildStoryBibleShim(storyFrameWithFrontmatter, language),
         "utf-8",
-      ),
-      writeFile(
-        join(storyDir, "emotional_arcs.md"),
-        language === "en"
-          ? "# Emotional Arcs\n\n| Character | Chapter | Emotional State | Trigger Event | Intensity (1-10) | Arc Direction |\n| --- | --- | --- | --- | --- | --- |\n"
-          : "# 情感弧线\n\n| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |\n|------|------|----------|----------|------------|----------|\n",
+      ));
+      writes.push(writeFile(
+        join(storyDir, "volume_outline.md"),
+        volumeMap,
         "utf-8",
-      ),
-      writeFile(
+      ));
+      writes.push(writeFile(
+        join(storyDir, "character_matrix.md"),
+        this.buildCharacterMatrixShim(roles, language),
+        "utf-8",
+      ));
+      writes.push(writeFile(
+        join(storyDir, "book_rules.md"),
+        this.buildBookRulesShim(bookRulesBody, language),
+        "utf-8",
+      ));
+    } else {
+      // Legacy 输出路径：LLM 还按老 prompt 输出 story_bible / volume_outline。
+      writes.push(writeFile(join(storyDir, "story_bible.md"), output.storyBible, "utf-8"));
+      writes.push(writeFile(join(storyDir, "volume_outline.md"), output.volumeOutline, "utf-8"));
+      writes.push(writeFile(join(storyDir, "book_rules.md"), output.bookRules, "utf-8"));
+      writes.push(writeFile(
         join(storyDir, "character_matrix.md"),
         language === "en"
           ? "# Character Matrix\n\n<!-- One ## section per character. Add new characters as new ## blocks. -->\n"
           : "# 角色矩阵\n\n<!-- 每个角色一个 ## 块，新角色追加新 ## 即可。 -->\n",
         "utf-8",
-      ),
-    );
+      ));
+    }
+
+    // current_state.md — Phase 5 下 architect 不再产出结构化初始状态，给个占位 seed，
+    // consolidator 运行时每章追加。如果 output 里带了内容（legacy 输出或 reviser 生成），
+    // 直接用。
+    const currentStateSeed = output.currentState?.trim()
+      ? output.currentState
+      : (language === "en"
+          ? "# Current State\n\n> Seeded at book creation. Runtime state is appended by the consolidator after each chapter. Initial per-character state lives in roles/*.Current_State; load-bearing initial world facts live in pending_hooks rows with start_chapter=0.\n"
+          : "# 当前状态\n\n> 建书时占位。运行时每章之后由 consolidator 追加最新状态。每个角色的初始状态详见 roles/*.当前现状；承重的初始世界设定见 pending_hooks 里 startChapter=0 的行。\n");
+    writes.push(writeFile(join(storyDir, "current_state.md"), currentStateSeed, "utf-8"));
+    writes.push(writeFile(join(storyDir, "pending_hooks.md"), output.pendingHooks, "utf-8"));
+
+    // 运行时 append log 文件，下游 state-validator / consolidator 依赖这些存在。
+    if (numericalSystem) {
+      writes.push(writeFile(
+        join(storyDir, "particle_ledger.md"),
+        language === "en"
+          ? "# Resource Ledger\n\n| Chapter | Opening Value | Source | Integrity | Delta | Closing Value | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n| 0 | 0 | Initialization | - | 0 | 0 | Initial book state |\n"
+          : "# 资源账本\n\n| 章节 | 期初值 | 来源 | 完整度 | 增量 | 期末值 | 依据 |\n|------|--------|------|--------|------|--------|------|\n| 0 | 0 | 初始化 | - | 0 | 0 | 开书初始 |\n",
+        "utf-8",
+      ));
+    }
+    writes.push(writeFile(
+      join(storyDir, "subplot_board.md"),
+      language === "en"
+        ? "# Subplot Board\n\n| Subplot ID | Subplot | Related Characters | Start Chapter | Last Active Chapter | Chapters Since | Status | Progress Summary | Payoff ETA |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        : "# 支线进度板\n\n| 支线ID | 支线名 | 相关角色 | 起始章 | 最近活跃章 | 距今章数 | 状态 | 进度概述 | 回收ETA |\n|--------|--------|----------|--------|------------|----------|------|----------|---------|\n",
+      "utf-8",
+    ));
+    writes.push(writeFile(
+      join(storyDir, "emotional_arcs.md"),
+      language === "en"
+        ? "# Emotional Arcs\n\n| Character | Chapter | Emotional State | Trigger Event | Intensity (1-10) | Arc Direction |\n| --- | --- | --- | --- | --- | --- |\n"
+        : "# 情感弧线\n\n| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |\n|------|------|----------|----------|------------|----------|\n",
+      "utf-8",
+    ));
 
     await Promise.all(writes);
   }
@@ -550,7 +785,7 @@ The volume_outline should naturally extend the existing narrative arc. Continue 
 3. **场景新鲜度**：续写部分至少50%的关键场景发生在导入章节未出现的地点或情境中
 4. **不重复会议**：如果导入章节以会议/讨论结束，续写必须从行动开始，不能再开一轮会`
       : `## 续写方向
-卷纲应自然延续已有叙事弧线。从导入章节的结尾处接续——推进现有冲突、兑现已埋伏笔、引入从当前局势中有机产生的新变数。不要回顾已知信息。`;
+卷纲应自然延续已有故事线。从导入章节的结尾处接续——推进现有冲突、兑现已埋伏笔、引入从当前局势中有机产生的新变数。不要回顾已知信息。`;
 
     const workingModeEn = isSeries
       ? `## Working Mode
@@ -804,24 +1039,122 @@ ${trimmed}\n`;
       parsedSections.set(normalizedName, content.slice(start, end).trim());
     }
 
-    const extract = (name: string): string => {
-      const section = parsedSections.get(this.normalizeSectionName(name));
-      if (!section) {
-        throw new Error(`Architect output missing required section: ${name}`);
-      }
-      if (name !== "pending_hooks") {
-        return section;
-      }
-      return this.normalizePendingHooksSection(this.stripTrailingAssistantCoda(section));
-    };
+    // Phase 5 新 sections
+    const storyFrame = parsedSections.get("story_frame") ?? "";
+    const volumeMap = parsedSections.get("volume_map") ?? "";
+    const rhythmPrinciples = parsedSections.get("rhythm_principles") ?? "";
+    const rolesRaw = parsedSections.get("roles") ?? "";
+    // Legacy sections — 当 LLM 还按老 prompt 输出时兜底。
+    const legacyStoryBible = parsedSections.get("story_bible") ?? "";
+    const legacyVolumeOutline = parsedSections.get("volume_outline") ?? "";
+    const bookRules = parsedSections.get("book_rules");
+    const currentStateLegacy = parsedSections.get("current_state") ?? "";
+    const pendingHooksRaw = parsedSections.get("pending_hooks");
+
+    // 用老名字输出且没有 story_frame/volume_map 时，roles 可空（走 legacy shim fallback）。
+    const usingLegacyOutlineNames = !storyFrame && !volumeMap
+      && (legacyStoryBible.length > 0 || legacyVolumeOutline.length > 0);
+
+    const effectiveStoryFrame = storyFrame || legacyStoryBible;
+    const effectiveVolumeMap = volumeMap || legacyVolumeOutline;
+
+    const missing: string[] = [];
+    if (!effectiveStoryFrame) missing.push("story_frame");
+    if (!effectiveVolumeMap) missing.push("volume_map");
+    if (!rolesRaw.trim() && !usingLegacyOutlineNames) missing.push("roles");
+    if (!bookRules) missing.push("book_rules");
+    if (!pendingHooksRaw) missing.push("pending_hooks");
+    if (missing.length > 0) {
+      throw new Error(
+        `Architect output missing required section${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}`,
+      );
+    }
+
+    const roles = this.parseRoles(rolesRaw);
+    const pendingHooks = this.normalizePendingHooksSection(
+      this.stripTrailingAssistantCoda(pendingHooksRaw!),
+    );
+
+    // Shim-facing 老字段：新 prompt 下用 buildStoryBibleShim 生成指针内容；
+    // 老 prompt 下直接用老内容。volumeOutline 也同理。
+    const storyBible = legacyStoryBible || effectiveStoryFrame;
+    const volumeOutline = legacyVolumeOutline || effectiveVolumeMap;
 
     return {
-      storyBible: extract("story_bible"),
-      volumeOutline: extract("volume_outline"),
-      bookRules: extract("book_rules"),
-      currentState: extract("current_state"),
-      pendingHooks: extract("pending_hooks"),
+      storyBible,
+      volumeOutline,
+      bookRules: bookRules!,
+      // current_state 在 Phase 5 下不是必需 section——writeFoundationFiles 会 seed
+      // 一个占位文件，consolidator 运行时按章追加。
+      currentState: currentStateLegacy,
+      pendingHooks,
+      storyFrame: effectiveStoryFrame,
+      volumeMap: effectiveVolumeMap,
+      rhythmPrinciples,
+      roles,
     };
+  }
+
+  /** Parse ---ROLE---...---CONTENT--- 块。畸形块静默丢弃。 */
+  private parseRoles(raw: string): ReadonlyArray<ArchitectRole> {
+    if (!raw.trim()) return [];
+
+    const blocks = raw.split(/^---ROLE---$/m).map((chunk) => chunk.trim()).filter(Boolean);
+    const roles: ArchitectRole[] = [];
+
+    for (const block of blocks) {
+      const contentSplit = block.split(/^---CONTENT---$/m);
+      if (contentSplit.length < 2) continue;
+
+      const headerRaw = contentSplit[0]!.trim();
+      const content = contentSplit.slice(1).join("\n---CONTENT---\n").trim();
+
+      const tierMatch = headerRaw.match(/tier\s*[:：]\s*(major|minor|主要|次要)/i);
+      const nameMatch = headerRaw.match(/name\s*[:：]\s*(.+)/i);
+      if (!tierMatch || !nameMatch) continue;
+
+      const tierValue = tierMatch[1]!.toLowerCase();
+      const tier: "major" | "minor" = (tierValue === "major" || tierValue === "主要") ? "major" : "minor";
+      const name = nameMatch[1]!.trim();
+      if (!name || !content) continue;
+
+      roles.push({ tier, name, content });
+    }
+
+    return roles;
+  }
+
+  private buildStoryBibleShim(storyFrame: string, language: "zh" | "en"): string {
+    if (language === "en") {
+      return `# Story Bible (compat pointer — deprecated)\n\n> This file is kept for external readers only. The authoritative source is now:\n> - outline/story_frame.md (theme / tonal ground / core conflict / world rules / endgame)\n> - outline/volume_map.md (volume-level plot map)\n> - roles/ directory (one-file-per-character sheets)\n\n## Excerpt from story_frame\n\n${storyFrame.slice(0, 2000)}\n`;
+    }
+    return `# 故事圣经（兼容指针——已废弃）\n\n> 本文件仅为外部读取保留。权威来源已迁移至：\n> - outline/story_frame.md（主题 / 基调 / 核心冲突 / 世界铁律 / 终局）\n> - outline/volume_map.md（卷级分卷地图）\n> - roles/ 文件夹（一人一卡角色档案）\n\n## story_frame 摘录\n\n${storyFrame.slice(0, 2000)}\n`;
+  }
+
+  private buildCharacterMatrixShim(roles: ReadonlyArray<ArchitectRole>, language: "zh" | "en"): string {
+    const majorLines = roles.filter((role) => role.tier === "major")
+      .map((role) => `- roles/主要角色/${role.name}.md`);
+    const minorLines = roles.filter((role) => role.tier === "minor")
+      .map((role) => `- roles/次要角色/${role.name}.md`);
+
+    if (language === "en") {
+      return `# Character Matrix (compat pointer — deprecated)\n\n> This file is kept for external readers only. Authoritative source is now the roles/ directory (one-file-per-character).\n\n## Major characters\n\n${majorLines.join("\n") || "(none)"}\n\n## Minor characters\n\n${minorLines.join("\n") || "(none)"}\n`;
+    }
+    return `# 角色矩阵（兼容指针——已废弃）\n\n> 本文件仅为外部读取保留。权威来源已迁移至 roles/ 文件夹（一人一卡）。\n\n## 主要角色\n\n${majorLines.join("\n") || "（无）"}\n\n## 次要角色\n\n${minorLines.join("\n") || "（无）"}\n`;
+  }
+
+  private buildBookRulesShim(bookRulesBody: string, language: "zh" | "en"): string {
+    const trimmedBody = bookRulesBody.trim();
+    if (language === "en") {
+      const excerpt = trimmedBody
+        ? `\n\n## Narrative guidance excerpt\n\n${trimmedBody}\n`
+        : "";
+      return `# Book Rules (compat pointer — deprecated)\n\n> This file is kept for external readers only. The authoritative YAML frontmatter now lives at the top of outline/story_frame.md.${excerpt}`;
+    }
+    const excerpt = trimmedBody
+      ? `\n\n## 叙事指引摘录\n\n${trimmedBody}\n`
+      : "";
+    return `# 本书规则（兼容指针——已废弃）\n\n> 本文件仅为外部读取保留。权威 YAML frontmatter 已迁移至 outline/story_frame.md 顶部。${excerpt}`;
   }
 
   private normalizeSectionName(name: string): string {
