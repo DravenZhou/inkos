@@ -75,6 +75,12 @@ const SubAgentParams = Type.Object({
   ], { description: "architect only: writing language. Default: zh" })),
   targetChapters: Type.Optional(Type.Number({ description: "architect only: total chapter count. Default: 200" })),
   chapterWordCount: Type.Optional(Type.Number({ description: "architect/writer: words per chapter. Default: 3000" })),
+  revise: Type.Optional(Type.Boolean({
+    description: "architect only: true 表示在已有书上重新生成架构稿（比如把旧的条目式格式升级成段落式架构稿 + 一人一卡的角色目录、或者按 feedback 调整某些细节），而不是新建书籍。需要同时提供 bookId",
+  })),
+  feedback: Type.Optional(Type.String({
+    description: "architect only: revise 模式下的调整要求。举例：把架构稿从条目式升级成段落式架构稿、某个角色设定需要重新设计、主线冲突表达太弱需要加强等。如果是架构稿评审未通过要求重写的场景，把评审意见的 overallFeedback 原样传入即可",
+  })),
   // -- reviser params --
   mode: Type.Optional(Type.Union([
     Type.Literal("spot-fix"),
@@ -120,7 +126,7 @@ export function createSubAgentTool(
       _signal?: AbortSignal,
       onUpdate?: AgentToolUpdateCallback,
     ): Promise<AgentToolResult<undefined>> {
-      const { agent, instruction, bookId, title, chapterNumber, genre, platform, language, targetChapters, chapterWordCount, mode, format, approvedOnly } = params;
+      const { agent, instruction, bookId, title, chapterNumber, genre, platform, language, targetChapters, chapterWordCount, revise, feedback, mode, format, approvedOnly } = params;
 
       const progress = (msg: string) => {
         onUpdate?.(textResult(msg));
@@ -129,6 +135,17 @@ export function createSubAgentTool(
       try {
         switch (agent) {
           case "architect": {
+            if (revise) {
+              if (!bookId) {
+                return textResult("Error: architect revise 模式需要 bookId，用于定位要重写的书。");
+              }
+              progress(`Revising foundation for "${bookId}"...`);
+              await pipeline.reviseFoundation(bookId, feedback ?? instruction);
+              progress(`Foundation revised for "${bookId}".`);
+              return textResult(
+                `Book "${bookId}" 架构稿已按要求重写。原书的条目式架构稿已备份到 story/.backup-phase4-<时间戳>/。`,
+              );
+            }
             if (activeBookId) {
               return textResult("当前已有书籍，不需要建书。如果你想创建新书，请先回到首页。");
             }

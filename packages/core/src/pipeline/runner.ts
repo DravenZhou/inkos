@@ -514,6 +514,85 @@ export class PipelineRunner {
     }
   }
 
+  /**
+   * Revise an existing book's foundation — read the legacy 条目式 架构稿, ask architect
+   * to re-emit as Phase 5 段落式 + 一人一卡 roles 目录, back up the originals under
+   * story/.backup-phase4-<timestamp>/, and overwrite the legacy files with shims.
+   */
+  async reviseFoundation(bookId: string, feedback: string): Promise<void> {
+    const bookDir = this.state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+
+    // 1. Back up the original legacy files before overwriting
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupDir = join(storyDir, `.backup-phase4-${timestamp}`);
+    await mkdir(backupDir, { recursive: true });
+    const legacyFiles = ["story_bible.md", "volume_outline.md", "book_rules.md", "character_matrix.md"];
+    for (const fileName of legacyFiles) {
+      try {
+        const content = await readFile(join(storyDir, fileName), "utf-8");
+        await writeFile(join(backupDir, fileName), content, "utf-8");
+      } catch {
+        /* 文件不存在就跳过 */
+      }
+    }
+
+    // 2. Load the original legacy content to feed the architect
+    const book = await this.state.loadBookConfig(bookId);
+    const [oldStoryBible, oldVolumeOutline, oldBookRules, oldCharacterMatrix] = await Promise.all([
+      readFile(join(storyDir, "story_bible.md"), "utf-8").catch(() => ""),
+      readFile(join(storyDir, "volume_outline.md"), "utf-8").catch(() => ""),
+      readFile(join(storyDir, "book_rules.md"), "utf-8").catch(() => ""),
+      readFile(join(storyDir, "character_matrix.md"), "utf-8").catch(() => ""),
+    ]);
+
+    // 3. Call architect with reviseFrom option → new Phase 5 foundation
+    const architect = new ArchitectAgent(this.agentCtxFor("architect", bookId));
+    const foundation = await architect.generateFoundation(book, undefined, undefined, {
+      reviseFrom: {
+        storyBible: oldStoryBible,
+        volumeOutline: oldVolumeOutline,
+        bookRules: oldBookRules,
+        characterMatrix: oldCharacterMatrix,
+        userFeedback: feedback,
+      },
+    });
+
+    // 4. Optional: run foundation-reviewer once — warn on failure, don't block
+    const reviewer = new FoundationReviewerAgent(this.agentCtxFor("foundation-reviewer", bookId));
+    const resolvedLanguage = (book.language ?? "zh") === "en" ? "en" as const : "zh" as const;
+    try {
+      const review = await reviewer.review({
+        foundation,
+        mode: "original",
+        language: resolvedLanguage,
+      } as Parameters<FoundationReviewerAgent["review"]>[0]);
+      if (!review.passed) {
+        this.config.logger?.warn?.(
+          `[reviseFoundation] 审核未通过，仍接受转换结果。反馈：${review.overallFeedback ?? ""}`,
+        );
+      }
+    } catch (error) {
+      this.config.logger?.warn?.(
+        `[reviseFoundation] 审核调用失败，跳过：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    // 5. Ensure Phase 5 目录存在，然后写新文件（覆盖旧的 flat md 为 shim）
+    const outlineDir = join(storyDir, "outline");
+    await mkdir(outlineDir, { recursive: true });
+    await mkdir(join(storyDir, "roles", "主要角色"), { recursive: true });
+    await mkdir(join(storyDir, "roles", "次要角色"), { recursive: true });
+
+    const { profile: gp } = await this.loadGenreProfile(book.genre);
+    await architect.writeFoundationFiles(
+      bookDir,
+      foundation,
+      gp.numericalSystem,
+      book.language ?? gp.language,
+    );
+  }
+
   /** Import external source material and generate fanfic_canon.md */
   async importFanficCanon(
     bookId: string,

@@ -49,6 +49,15 @@ export class ArchitectAgent extends BaseAgent {
     book: BookConfig,
     externalContext?: string,
     reviewFeedback?: string,
+    options?: {
+      reviseFrom?: {
+        storyBible: string;
+        volumeOutline: string;
+        bookRules: string;
+        characterMatrix: string;
+        userFeedback: string;
+      };
+    },
   ): Promise<ArchitectOutput> {
     const { profile: gp, body: genreBody } =
       await readGenreProfile(this.ctx.projectRoot, book.genre);
@@ -58,6 +67,9 @@ export class ArchitectAgent extends BaseAgent {
       ? `\n\n## 外部指令\n以下是来自外部系统的创作指令，请将其融入设定中：\n\n${externalContext}\n`
       : "";
     const reviewFeedbackBlock = this.buildReviewFeedbackBlock(reviewFeedback, resolvedLanguage);
+    const revisePrompt = options?.reviseFrom
+      ? this.buildRevisePrompt(options.reviseFrom)
+      : "";
 
     const numericalBlock = gp.numericalSystem
       ? `- 有明确的数值/资源体系可追踪
@@ -72,9 +84,10 @@ export class ArchitectAgent extends BaseAgent {
       ? "- 需要年代考据支撑（在 book_rules 中设置 eraConstraints）"
       : "";
 
-    const systemPrompt = resolvedLanguage === "en"
+    const basePrompt = resolvedLanguage === "en"
       ? this.buildEnglishFoundationPrompt(book, gp, genreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock)
       : this.buildChineseFoundationPrompt(book, gp, genreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock);
+    const systemPrompt = revisePrompt + basePrompt;
 
     const langPrefix = resolvedLanguage === "en"
       ? `【LANGUAGE OVERRIDE】ALL output (story_frame, volume_map, roles, book_rules, pending_hooks) MUST be written in English. Character names, place names, and all prose must be in English. The === SECTION: === tags remain unchanged. Do NOT emit rhythm_principles or current_state sections — rhythm principles live inside the last paragraph of volume_map; environment/era anchors (when relevant) are woven into story_frame's world-tonal-ground paragraph.\n\n`
@@ -89,6 +102,49 @@ export class ArchitectAgent extends BaseAgent {
     ], { temperature: 0.8, maxTokens: 16384 });
 
     return this.parseSections(response.content);
+  }
+
+  private buildRevisePrompt(reviseFrom: {
+    storyBible: string;
+    volumeOutline: string;
+    bookRules: string;
+    characterMatrix: string;
+    userFeedback: string;
+  }): string {
+    return `你在把一本已有书的架构稿从条目式升级成段落式架构稿 + 一人一卡的角色目录。
+
+原书信息（条目式架构稿原文，这是权威内容，必须完整保留里面的世界观 / 角色 / 主线 / 伏笔）：
+
+【story_bible.md 全文】
+${reviseFrom.storyBible || "（无）"}
+
+【volume_outline.md 全文】
+${reviseFrom.volumeOutline || "（无）"}
+
+【book_rules.md 全文】
+${reviseFrom.bookRules || "（无）"}
+
+【character_matrix.md 全文】
+${reviseFrom.characterMatrix || "（无）"}
+
+你的任务：
+1. 把 story_bible 的内容重新组织成 4 段段落式 story_frame.md（主题 / 核心冲突 / 世界观底色 / 终局方向）
+2. 把 volume_outline 的内容重新组织成 5 段 volume_map.md + 末尾 1 段节奏原则
+3. 把 character_matrix 里的每个角色拆成一份 roles/主要角色/<name>.md 或 roles/次要角色/<name>.md
+
+严格约束：
+- 世界观设定、角色设定、主线走向、已埋下的伏笔一个字都不能丢
+- 如果原内容里有 bullet 点，把它们连成段落；不要只是把 bullet 转成句号分隔
+- 主次角色的判断依据：character_matrix 里已标注的如果有，沿用；没有的话，把在 volume_outline 里出现频次高、或者承担主线冲突的列为主要，其余为次要
+- 基调 / 语气不要改变
+- 如果原内容里留有空白或未展开项，保留为空，不要主动补全
+
+用户额外要求：
+${reviseFrom.userFeedback || "（无）"}
+
+---
+
+`;
   }
 
   // -------------------------------------------------------------------------
